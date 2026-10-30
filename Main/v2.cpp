@@ -20,7 +20,7 @@ MPU6050 mpu6050(Wire);
 // ==================================================
 const char* WIFI_SSID = "Hafiz";
 const char* WIFI_PASSWORD = "Tom@hunt01";
-const char* OPENWEATHER_API_KEY = "   ";
+const char* OPENWEATHER_API_KEY = "API_KEY_HERE";  // Replace with your OpenWeatherMap API key";
 const char* CITY = "Sirajganj";
 const char* COUNTRY_CODE = "BD";
 const char* TIMEZONE = "IST-6:00";
