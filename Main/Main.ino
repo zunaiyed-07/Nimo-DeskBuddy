@@ -361,7 +361,7 @@ void openMenu() {
 
 int getMenuOptionCount() {
   if (menuDepth == 0) return 7;
-  if (currentMode == MODE_CLOCK_FACES) return 5;
+  if (currentMode == MODE_CLOCK_FACES) return 6;
   if (currentMode == MODE_WEATHER_FACE) return 6;
   if (currentMode == MODE_ANIMATION) return 16;
   if (currentMode == MODE_FACE_EXPRESSIONS) return FACE_EXPRESSION_COUNT;
@@ -483,7 +483,7 @@ void handleSingleTap() {
 
   switch (currentMode) {
     case MODE_CLOCK_FACES:
-      clockStyle = (clockStyle + 1) % 5;
+      clockStyle = (clockStyle + 1) % 6;
       settings.putInt("clock", clockStyle);
       break;
     case MODE_WEATHER_FACE:
@@ -1147,8 +1147,6 @@ void drawClockPage() {
   display.print(dateStr);
   display.setCursor(108, 8);
   display.print(ampm);
-  display.drawLine(4, 14, 124, 14, SSD1306_WHITE);
-
   display.setFont(&FreeSansBold18pt7b);
   char timeStr[24];
   snprintf(timeStr, sizeof(timeStr), "%02d:%02d", h12, t.tm_min);
@@ -1280,7 +1278,8 @@ void drawMenu() {
     "Clock faces", "Weather", "Animations", "Expressions", "Dino game", "Auto mode", "Timer"
   };
   static const char* clockLabels[] = {
-    "Big 12-hour", "Big 24-hour", "Split digital", "Seconds bar", "World clock"
+    "Big 12-hour", "Big 24-hour", "Split digital", "Seconds bar", "World clock",
+    "Minimal 12-hour"
   };
   static const char* weatherLabels[] = {
     "Current weather", "Weather summary", "3-day forecast",
@@ -1370,7 +1369,7 @@ void drawSplitClock() {
   display.print(t.tm_hour >= 12 ? "PM" : "AM");
 }
 
-void drawDigitalClock12() {
+void drawDigitalClock24() {
   struct tm t;
   if (!getLocalTime(&t)) {
     display.setFont(NULL);
@@ -1380,24 +1379,18 @@ void drawDigitalClock12() {
   }
 
   char timeStr[6];
-  int hour12 = t.tm_hour % 12;
-  if (hour12 == 0) hour12 = 12;
-  snprintf(timeStr, sizeof(timeStr), "%02d:%02d", hour12, t.tm_min);
+  snprintf(timeStr, sizeof(timeStr), "%02d:%02d", t.tm_hour, t.tm_min);
   char dateStr[20];
   strftime(dateStr, sizeof(dateStr), "%a, %d %b", &t);
   display.setFont(NULL);
   display.setCursor(4, 8);
   display.print(dateStr);
-  display.drawLine(4, 14, 124, 14, SSD1306_WHITE);
   display.setFont(&FreeSansBold18pt7b);
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
   display.setCursor((SCREEN_WIDTH - w) / 2, 49);
   display.print(timeStr);
-  display.setFont(NULL);
-  display.setCursor(105, 8);
-  display.print(t.tm_hour >= 12 ? "PM" : "AM");
 }
 
 void drawSecondsClock() {
@@ -1418,21 +1411,19 @@ void drawSecondsClock() {
   display.setFont(NULL);
   display.setCursor(4, 4);
   display.print(dateStr);
-  display.setCursor(106, 4);
-  display.print(t.tm_hour >= 12 ? "PM" : "AM");
-  display.setFont(&FreeSansBold9pt7b);
   char secondsText[3];
   snprintf(secondsText, sizeof(secondsText), "%02d", t.tm_sec);
   int16_t x1, y1;
   uint16_t w, h;
-  display.getTextBounds(secondsText, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor(SCREEN_WIDTH - w - 4, 20);
-  display.print(secondsText);
   display.setFont(NULL);
-  display.drawLine(4, 24, 124, 24, SSD1306_WHITE);
+  display.getTextBounds(secondsText, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor(106, 4);
+  display.print(t.tm_hour >= 12 ? "PM" : "AM");
+  display.setCursor(SCREEN_WIDTH - w - 4, 51);
+  display.print(secondsText);
   display.setFont(&FreeSansBold18pt7b);
   display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((SCREEN_WIDTH - w) / 2, 49);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 47);
   display.print(timeStr);
 
   display.drawRect(4, 59, 120, 3, SSD1306_WHITE);
@@ -1440,13 +1431,32 @@ void drawSecondsClock() {
   if (progressWidth > 0) display.fillRect(5, 60, progressWidth, 1, SSD1306_WHITE);
 }
 
+void drawMinimalClock12() {
+  struct tm t;
+  if (!getLocalTime(&t)) return;
+
+  int hour12 = t.tm_hour % 12;
+  if (hour12 == 0) hour12 = 12;
+  char timeStr[6];
+  snprintf(timeStr, sizeof(timeStr), "%02d:%02d", hour12, t.tm_min);
+
+  display.setFont(&FreeSansBold18pt7b);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2 - x1,
+                    (SCREEN_HEIGHT - h) / 2 - y1);
+  display.print(timeStr);
+}
+
 void drawClockStyle() {
   switch (clockStyle) {
     case 0: drawClockPage(); break;
-    case 1: drawDigitalClock12(); break;
+    case 1: drawDigitalClock24(); break;
     case 2: drawSplitClock(); break;
     case 3: drawSecondsClock(); break;
     case 4: drawWorldClockPage(); break;
+    case 5: drawMinimalClock12(); break;
   }
 }
 
@@ -1764,7 +1774,7 @@ void setup() {
   display.clearDisplay();
 
   settings.begin("deskbuddy", false);
-  clockStyle = constrain(settings.getInt("clock", 0), 0, 4);
+  clockStyle = constrain(settings.getInt("clock", 0), 0, 5);
   weatherStyle = constrain(settings.getInt("weather", 0), 0, 5);
   selectedAnimation = constrain(settings.getInt("animation", 0), 0, 15);
   animationSceneIndex = selectedAnimation;
