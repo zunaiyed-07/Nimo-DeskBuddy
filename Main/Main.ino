@@ -15,12 +15,12 @@
 // ==================================================
 // YOUR CREDENTIALS - EDIT THESE
 // ==================================================
-const char* WIFI_SSID = "Hafiz";
-const char* WIFI_PASSWORD = "Tom@hunt01";
-const char* OPENWEATHER_API_KEY = "761a2b9fac1a8feb9a92c93cfeb95724";
-const char* CITY = "Sirajganj";
-const char* COUNTRY_CODE = "BD";
-const char* TIMEZONE = "IST-6:00";
+const char* WIFI_SSID = "Hafiz"; //WIFI SSID  
+const char* WIFI_PASSWORD = "Tom@hunt01"; //WIFI Password
+const char* OPENWEATHER_API_KEY = "Your API";//Your OpenWeather API Here
+const char* CITY = "Sirajganj"; //Your City
+const char* COUNTRY_CODE = "BD"; //Country Code
+const char* TIMEZONE = "IST-6:00"; 
 
 // ==================================================
 // HARDWARE CONFIGURATION
