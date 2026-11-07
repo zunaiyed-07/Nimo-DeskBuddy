@@ -1,139 +1,80 @@
-# Bitox MiniBot
+# NIMO MiniBot
 
-A compact ESP32-based interactive desk companion built around a 128x64 OLED display. This project combines a friendly animated face, live weather data, a clock, a stopwatch/timer, and small mini-games into a single battery-powered desktop device.
+NIMO is an interactive desk companion built with an ESP32-C3 Super Mini and a
+128x64 SSD1306 OLED. It includes animated faces and scenes, clock and weather
+screens, a stopwatch/countdown timer, and a small button-controlled game.
 
-The main firmware is implemented in [Bitox/Main/Main.ino](Bitox/Main/Main.ino), and the hardware reference for the charging board is available in [Bitox/Circuit/Tp4056-5V-1A-18650-Type-C-USB-Lithium-Battery-Charging-Board-Charger-Module-with-Protection.avif](Bitox/Circuit/Tp4056-5V-1A-18650-Type-C-USB-Lithium-Battery-Charging-Board-Charger-Module-with-Protection.avif).
+## Hardware
 
-## Project Highlights
+- ESP32-C3 Super Mini
+- 128x64 SSD1306 I2C OLED (typically address `0x3C`)
+- Momentary pushbutton
+- Optional battery and charging circuit
 
-- ESP32-powered smart display with animated face expressions
-- Live weather and forecast using OpenWeatherMap
-- Multiple clock and weather display styles
-- Stopwatch and countdown timer functions
-- Tap, double-tap, and long-press interaction model
-- Auto mode for rotating display states
-- Small game mode for quick interaction
-- Settings stored in flash memory for persistence
+### Wiring
 
-## Hardware Overview
-
-This build is designed around an ESP32 microcontroller paired with:
-
-- 128x64 SSD1306 OLED display
-- I2C communication bus
-- One tactile pushbutton for interaction
-- TP4056-based Li-ion charging module for 18650 cell charging
-- USB-C or USB power input with battery protection
-
-## Repository Structure
-
-- [Bitox/Main/Main.ino](Bitox/Main/Main.ino) — main firmware sketch
-- [Bitox/Circuit](Bitox/Circuit) — hardware reference image and board assets
-
-## Required Software
-
-Before uploading the sketch, install the following in the Arduino IDE:
-
-- Arduino IDE or VS Code with Arduino tooling
-- ESP32 board package
-- Adafruit SSD1306 library
-- Adafruit GFX library
-- Arduino_JSON library
-
-## Wiring / Pin Configuration
-
-The code is configured for the following hardware pins:
-
-| Function | Pin |
+| Component | ESP32-C3 Super Mini |
 | --- | --- |
-| OLED SDA | 41 |
-| OLED SCL | 42 |
-| Button | 7 |
+| OLED VCC | 3V3 |
+| OLED GND | GND |
+| OLED SDA | GPIO 5 |
+| OLED SCL | GPIO 6 |
+| Button terminal 1 | GPIO 7 |
+| Button terminal 2 | GND |
 
-The display communicates over I2C, and the button uses an internal pull-up configuration.
+The button uses the ESP32's internal pull-up. GPIO 5 and GPIO 6 are selected
+for I2C to avoid the Super Mini's boot button (GPIO 9) and onboard LED (usually
+GPIO 8). If your board revision labels pins differently, use the GPIO numbers
+printed in its pinout and update `SDA_PIN`, `SCL_PIN`, or `BUTTON_PIN` near the
+top of [Main/Main.ino](Main/Main.ino) to match your wiring. Power the OLED from
+3.3 V unless its manufacturer explicitly supports another supply voltage.
+
+## Arduino IDE setup
+
+1. Install the Espressif **esp32** board package using Boards Manager.
+2. Select **ESP32C3 Dev Module** (the generic ESP32-C3 target for the Super
+   Mini) and the board's serial port.
+3. If the board options are available, enable **USB CDC On Boot** when using
+   the built-in USB connection.
+4. Install these libraries from Library Manager:
+   - Adafruit SSD1306
+   - Adafruit GFX Library
+   - Arduino_JSON
+5. Open [Main/Main.ino](Main/Main.ino), compile, and upload.
+
+`WiFi`, `WebServer`, `Preferences`, `HTTPClient`, and `Wire` are provided by the
+ESP32 Arduino core.
 
 ## Configuration
 
-Open [Bitox/Main/Main.ino](Bitox/Main/Main.ino) and update the Wi-Fi and weather credentials near the top of the file:
+Edit the configuration constants near the top of [Main/Main.ino](Main/Main.ino)
+before uploading:
 
 ```cpp
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY";
-const char* CITY = "YOUR_CITY";
-const char* COUNTRY_CODE = "US";
-const char* TIMEZONE = "IST-6:00";
+const char* CITY = "Sirajganj";
+const char* COUNTRY_CODE = "BD";
+const char* TIMEZONE = "BDT-6";
 ```
 
-Important:
-
-- Replace the sample credentials with your own before compiling.
-- Use a valid OpenWeatherMap API key for weather and forecast data.
-- If Wi-Fi is unavailable, the device will still boot but some online features will be limited.
-
-## Upload Procedure
-
-1. Connect the ESP32 board to your computer.
-2. Open [Bitox/Main/Main.ino](Bitox/Main/Main.ino) in the Arduino IDE.
-3. Select the correct ESP32 board and COM port.
-4. Install the required libraries if prompted.
-5. Compile and upload the sketch.
-6. Power the board and verify the boot animation and Wi-Fi connection sequence.
+Use your 2.4 GHz Wi-Fi credentials and an OpenWeatherMap API key. Change the
+city, ISO country code, and POSIX timezone string for your location. The
+firmware will still start if Wi-Fi is unavailable, but time synchronization and
+online weather data will not work. Do not commit personal Wi-Fi credentials or
+API keys to the repository.
 
 ## Controls
 
-The project uses a simple pushbutton interaction model:
+- Single tap: advance the current selection or perform its action
+- Double tap: select a menu item or perform the mode's secondary action
+- Long press: open or close the menu
 
-- Single tap: cycle or trigger current mode action
-- Double tap: confirm selection or trigger a secondary action
-- Long press: open menu or close menu
+Available modes include clock faces, weather, animations, expressions, the
+Dino game, auto mode, and a stopwatch/countdown timer.
 
-### Modes
+## Repository contents
 
-The device supports these primary modes:
-
-- Clock faces
-- Weather display
-- Animated scenes
-- Face expressions
-- Mini-game
-- Auto mode
-- Timer / stopwatch
-
-## Features in Practice
-
-Once running, the device can:
-
-- Show the current time in different visual styles
-- Display weather and a short forecast for a configured city
-- Change the face mood based on conditions or user interaction
-- Present a friendly animated character on the OLED screen
-- Run a small endless runner game using the same button
-- Keep timing functions useful for desk productivity
-
-## Notes
-
-This project is intended for hobby, experimentation, and learning. It is especially suitable for:
-
-- personal desk gadgets
-- mood displays
-- interactive weather dashboards
-- embedded systems prototyping
-
-The firmware is intentionally self-contained and can be adapted to a custom enclosure or battery-powered case.
-
-## License
-
-This project is provided as-is for educational and personal use. If you plan to distribute or commercialize it, please check the licensing requirements of the libraries and any third-party assets before publishing.
-
-## Recommended Next Improvements
-
-- Add a custom enclosure design for the ESP32 and OLED screen
-- Improve battery charging and power management
-- Add a low-power sleep mode for longer battery life
-- Expand the animation system and expression library
-- Add more weather layouts and richer visual themes
-
----
-
-Created for the Bitox MiniBot project.
+- [Main/Main.ino](Main/Main.ino) — firmware sketch
+- `Circuit/PCB main.zip` — circuit/PCB reference files

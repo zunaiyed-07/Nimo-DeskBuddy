@@ -15,20 +15,20 @@
 // ==================================================
 // YOUR CREDENTIALS - EDIT THESE
 // ==================================================
-const char* WIFI_SSID = "Hafiz";
-const char* WIFI_PASSWORD = "Tom@hunt01";
-const char* OPENWEATHER_API_KEY = "761a2b9fac1a8feb9a92c93cfeb95724";
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY";
 const char* CITY = "Sirajganj";
 const char* COUNTRY_CODE = "BD";
-const char* TIMEZONE = "IST-6:00";
+const char* TIMEZONE = "BDT-6";
 
 // ==================================================
 // HARDWARE CONFIGURATION
 // ==================================================
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define SDA_PIN 41
-#define SCL_PIN 42
+#define SDA_PIN 5
+#define SCL_PIN 6
 #define BUTTON_PIN 7
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
