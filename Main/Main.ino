@@ -15,9 +15,9 @@
 // ==================================================
 // YOUR CREDENTIALS - EDIT THESE
 // ==================================================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY";
+const char* WIFI_SSID = "Hafiz";
+const char* WIFI_PASSWORD = "Tom@hunt01";
+const char* OPENWEATHER_API_KEY = "761a2b9fac1a8feb9a92c93cfeb95724";
 const char* CITY = "Sirajganj";
 const char* COUNTRY_CODE = "BD";
 const char* TIMEZONE = "BDT-6";
@@ -30,6 +30,7 @@ const char* TIMEZONE = "BDT-6";
 #define SDA_PIN 5
 #define SCL_PIN 6
 #define BUTTON_PIN 7
+#define TOUCH_ACTIVE_LEVEL HIGH
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 void drawWifiAnimation(Adafruit_SSD1306& target, uint8_t frameIndex);
@@ -545,7 +546,7 @@ void handleButton() {
   unsigned long now = millis();
   if (now < buttonReadyAt) return;
 
-  bool reading = digitalRead(BUTTON_PIN) == LOW;
+  bool reading = digitalRead(BUTTON_PIN) == TOUCH_ACTIVE_LEVEL;
   if (!buttonArmed) {
     if (!reading) {
       if (buttonReleaseStart == 0) buttonReleaseStart = now;
@@ -1764,7 +1765,7 @@ void setup() {
   delay(500);
   randomSeed(micros());
 
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_PIN, INPUT);
   Wire.begin(SDA_PIN, SCL_PIN);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("SSD1306 initialization failed");
@@ -1801,6 +1802,8 @@ void setup() {
     delay(33);
   }
   if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Wi-Fi connected; IP: ");
+    Serial.println(WiFi.localIP());
     display.clearDisplay();
     display.setFont(NULL);
     const char* wifiLabel = "WiFi";
@@ -1820,6 +1823,7 @@ void setup() {
     getWeatherAndForecast();
     lastWeatherUpdate = millis();
   } else {
+    Serial.printf("Wi-Fi connection failed (status=%d)\n", static_cast<int>(WiFi.status()));
     display.clearDisplay(); display.setCursor(15, 30); display.print("WiFi Failed!"); display.display(); delay(2000);
   }
 
