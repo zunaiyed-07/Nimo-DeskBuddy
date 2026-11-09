@@ -113,8 +113,10 @@ On the Overview page, choose **Clock**, **Weather**, **Animation**, or
 phone-controlled stopwatch or countdown (1–60 minutes), including start,
 pause, and reset controls. Choose **Dino game** to play on the OLED; use the
 dashboard's Jump button to clear cacti and Restart game after a collision.
-The dashboard also groups
-animations and expressions by collection under Appearance.
+The firmware includes 24 animation scenes and 30 facial expressions, including
+orbiting stars, a petal breeze, curious, grateful, and playful faces. The
+dashboard also groups animations and expressions by collection under
+Appearance.
 
 The date and time can be entered manually in the configured device timezone.
 Without internet time synchronization or a battery-backed RTC, the clock keeps
