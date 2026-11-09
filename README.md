@@ -32,11 +32,11 @@ in its pinout and update `SDA_PIN`, `SCL_PIN`, or `BUTTON_PIN` near the top of
 [Main/Main.ino](Main/Main.ino) to match your wiring. Power the OLED from 3.3 V
 unless its manufacturer explicitly supports another supply voltage.
 
-The firmware requires the touch output to stay active for 150 ms before
-accepting a press, which filters brief proximity-triggered pulses. If the
-sensor output stays active while a finger is only nearby, reduce the sensor's
-sensitivity or adjust its sensing pad according to the module's documentation;
-software cannot distinguish that sustained signal from an actual touch.
+The firmware debounces touch presses for 40 ms and releases for 35 ms, which
+filters brief electrical noise while allowing quick taps. If the sensor output
+stays active while a finger is only nearby, reduce the sensor's sensitivity or
+adjust its sensing pad according to the module's documentation; software cannot
+distinguish that sustained signal from an actual touch.
 
 ## Arduino IDE setup
 
@@ -82,6 +82,45 @@ API keys to the repository.
 
 Available modes include clock faces, weather, animations, expressions, the
 Dino game, auto mode, and a stopwatch/countdown timer.
+
+- Double tap is recognized when the second touch begins within 550 ms of the
+  first tap, so a normal second-touch release does not have to finish inside
+  the interval.
+
+## Phone dashboard
+
+The device always starts its setup access point, so you can open the dashboard
+to configure Wi-Fi even while it connects to a router. Connect your phone to
+the setup network and open the address shown on the OLED:
+
+- Wi-Fi name: `NIMO`
+- Password: `nimo-setup-24` (change `SETUP_AP_PASSWORD` before uploading)
+- Dashboard: `http://192.168.1.4`
+
+In Device settings, scan for nearby Wi-Fi networks, choose one, enter its
+password, and select **Connect and save**. NIMO keeps the dashboard available
+on its setup network while connecting. A network is saved only after a
+successful connection; saved credentials are retried automatically on later
+boots and while the network is out of range. The compiled Wi-Fi settings are
+used as the initial connection until a network is saved from the dashboard.
+After connecting to the home Wi-Fi, the OLED briefly shows the device's home
+network IP address; enter that address in a browser on the same Wi-Fi to reopen
+the dashboard. The dashboard connection card also switches to this address
+while connected.
+
+On the Overview page, choose **Clock**, **Weather**, **Animation**, or
+**Expression** to reveal the available choices. Choose **Timer** for a
+phone-controlled stopwatch or countdown (1–60 minutes), including start,
+pause, and reset controls. Choose **Dino game** to play on the OLED; use the
+dashboard's Jump button to clear cacti and Restart game after a collision.
+The dashboard also groups
+animations and expressions by collection under Appearance.
+
+The date and time can be entered manually in the configured device timezone.
+Without internet time synchronization or a battery-backed RTC, the clock keeps
+time only while the device remains powered; set it again after a power cycle.
+This firmware uses Wi-Fi and does not provide Bluetooth control. Keep the
+dashboard on a trusted network and do not expose its HTTP port to the internet.
 
 ## Repository contents
 

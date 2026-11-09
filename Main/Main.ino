@@ -7,7 +7,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "time.h"
+#include <sys/time.h>
 #include <math.h>
+#include <stdlib.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
@@ -21,6 +23,10 @@ const char* OPENWEATHER_API_KEY = "761a2b9fac1a8feb9a92c93cfeb95724";
 const char* CITY = "Sirajganj";
 const char* COUNTRY_CODE = "BD";
 const char* TIMEZONE = "BDT-6";
+const char* SETUP_AP_SSID = "NIMO";
+const char* SETUP_AP_PASSWORD = "nimo-setup-24";
+const unsigned long WIFI_RETRY_INTERVAL_MS = 15000;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // ==================================================
 // HARDWARE CONFIGURATION
@@ -120,9 +126,9 @@ unsigned long lastPinChange = 0;
 unsigned long pressStartTime = 0;
 bool isLongPressHandled = false;
 const unsigned long LONG_PRESS_TIME = 1000;
-const unsigned long DOUBLE_TAP_DELAY = 400;
-const unsigned long TOUCH_PRESS_DEBOUNCE_TIME = 150;
-const unsigned long TOUCH_RELEASE_DEBOUNCE_TIME = 50;
+const unsigned long DOUBLE_TAP_DELAY = 550;
+const unsigned long TOUCH_PRESS_DEBOUNCE_TIME = 40;
+const unsigned long TOUCH_RELEASE_DEBOUNCE_TIME = 35;
 
 enum DeskMode {
   MODE_CLOCK_FACES,
@@ -145,6 +151,7 @@ int animationVariant = 0;
 int selectedAnimation = 0;
 int selectedExpression = 1;
 bool pendingTap = false;
+bool doubleTapCandidate = false;
 unsigned long petMoodEnd = 0;
 int petPreviousMood = 1;
 unsigned long autoModeStarted = 0;
@@ -168,6 +175,7 @@ struct SceneParticle {
   int size;
 };
 SceneParticle sceneParticles[SCENE_PARTICLE_COUNT];
+void resetSceneParticles();
 
 float dinoY = 48;
 float dinoVelocityY = 0;
@@ -175,6 +183,22 @@ float obstacleX = 128;
 unsigned long lastGameUpdate = 0;
 unsigned long gameScore = 0;
 bool gameOver = false;
+
+bool accessPointMode = false;
+WebServer controlServer(80);
+unsigned long networkInfoUntil = 0;
+String pendingWifiSsid;
+String pendingWifiPassword;
+String configuredWifiSsid;
+String configuredWifiPassword;
+String wifiConnectionMessage;
+bool wifiConnectPending = false;
+bool stationWasConnected = false;
+bool wifiScanInProgress = false;
+bool savedNetworkFailureReported = false;
+unsigned long wifiConnectStartedAt = 0;
+unsigned long stationConnectStartedAt = 0;
+unsigned long lastWifiRetryAt = 0;
 
 #define MOOD_NORMAL     0
 #define MOOD_HAPPY      1
@@ -556,6 +580,7 @@ void handleButton() {
         rawPinState = false;
         lastPinState = false;
         pendingTap = false;
+        doubleTapCandidate = false;
         lastPinChange = now;
       }
     } else {
@@ -567,6 +592,11 @@ void handleButton() {
   if (reading != rawPinState) {
     rawPinState = reading;
     lastPinChange = now;
+    if (reading && pendingTap && now - lastTapTime <= DOUBLE_TAP_DELAY) {
+      doubleTapCandidate = true;
+    } else if (!reading && !lastPinState) {
+      doubleTapCandidate = false;
+    }
   }
   unsigned long debounceTime = rawPinState
     ? TOUCH_PRESS_DEBOUNCE_TIME
@@ -591,12 +621,14 @@ void handleButton() {
         Serial.println("Menu opened: tap to move, double-tap to select");
       }
       pendingTap = false;
+      doubleTapCandidate = false;
       isLongPressHandled = true;
     }
   } else if (!currentPinState && lastPinState) {
     if ((now - pressStartTime < LONG_PRESS_TIME) && !isLongPressHandled) {
-      if (pendingTap && now - lastTapTime <= DOUBLE_TAP_DELAY) {
+      if (doubleTapCandidate && pendingTap) {
         pendingTap = false;
+        doubleTapCandidate = false;
         handleDoubleTap();
       } else {
         pendingTap = true;
@@ -604,13 +636,575 @@ void handleButton() {
         if (currentMode == MODE_GAMES && !gameOver) jumpDino();
       }
     }
+    doubleTapCandidate = false;
   }
   lastPinState = currentPinState;
 
-  if (pendingTap && now - lastTapTime > DOUBLE_TAP_DELAY) {
+  bool secondTouchDebouncing = rawPinState && pendingTap &&
+    now - lastTapTime <= DOUBLE_TAP_DELAY + TOUCH_PRESS_DEBOUNCE_TIME;
+  if (pendingTap && !doubleTapCandidate && !secondTouchDebouncing &&
+      now - lastTapTime > DOUBLE_TAP_DELAY) {
     pendingTap = false;
     if (currentMode != MODE_GAMES || gameOver) handleSingleTap();
   }
+}
+
+// ==================================================
+// LOCAL WI-FI CONTROL PANEL
+// ==================================================
+const char CONTROL_PAGE[] PROGMEM = R"rawliteral(
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f5f6fa"><title>NIMO | Desk Buddy</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f9;color:#202538;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{height:68px;background:#fff;border-bottom:1px solid #e6e8ef;display:flex;align-items:center;padding:0 max(18px,calc((100vw - 960px)/2));gap:12px}
+.logo{width:36px;height:36px;border-radius:11px;background:#6558d3;color:white;display:grid;place-items:center;font-size:19px;font-weight:800}
+.brand{font-weight:750}.brand small{display:block;font-size:10px;letter-spacing:1px;color:#81889a}.status{margin-left:auto;color:#687086;font-size:12px}
+main{max-width:960px;margin:auto;padding:26px 18px 55px}.tabs{display:flex;gap:5px;width:max-content;background:#e9eaf1;border-radius:11px;padding:5px;margin-bottom:24px}
+.tab{border:0;background:none;color:#747b8f;border-radius:8px;padding:9px 16px;font-weight:650}.tab.active{background:#fff;color:#202538;box-shadow:0 2px 6px #20253812}
+.panel{display:none}.panel.active{display:block}h1{font-size:26px;letter-spacing:-.6px;margin:0 0 3px}h2{font-size:16px;margin:0}p{color:#7b8294;margin:4px 0 18px;font-size:13px}
+.card{background:white;border:1px solid #e7e9ef;border-radius:15px;padding:20px;margin:14px 0;box-shadow:0 8px 22px #20253808}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}.mode{min-height:78px;text-align:left;background:white;border:1px solid #e2e4ec;border-radius:11px;padding:12px;color:#343a4d;font-weight:650}
+.mode:hover,.mode.active{border-color:#7569dc;background:#f3f2ff;color:#4035a3}.mode b{display:block;color:#6558d3;font-size:18px;margin-bottom:5px}
+label{display:block;color:#60677a;font-size:12px;font-weight:650;margin:15px 0 6px}select,input{width:100%;height:44px;background:white;border:1px solid #dfe2e9;border-radius:9px;padding:0 12px;color:#202538;font:inherit}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.btn{border:0;border-radius:9px;height:42px;padding:0 16px;background:#eeeef4;color:#30364a;font:inherit;font-weight:680;cursor:pointer}
+.primary{background:#6558d3;color:white}.danger{background:#fff0f1;color:#b5404b}.btnline{display:flex;align-items:center;gap:11px;margin-top:16px;flex-wrap:wrap}
+.msg{font-size:12px;color:#21865a;min-height:18px;margin-top:8px}.msg.bad{color:#b5404b}.hint{font-size:12px;color:#83899a}
+.address{font:600 13px ui-monospace,monospace;color:#5046b0}.network{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #eceef2;padding-top:13px;margin-top:14px}
+.network strong,.network small{display:block}.network small{color:#7b8294;margin-top:2px}.notice{background:#f3f2ff;color:#625b89;padding:12px;border-radius:9px;font-size:12px;margin-top:14px}
+[hidden]{display:none!important}.style-options{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+.style-option{min-height:56px;border:1px solid #e2e4ec;border-radius:11px;background:#fff;color:#343a4d;font:inherit;font-weight:650;cursor:pointer}
+.style-option:hover,.style-option.active{border-color:#7569dc;background:#f3f2ff;color:#4035a3}
+.timer-display{font:700 clamp(32px,8vw,48px)/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:1px;color:#292d43;margin:18px 0}
+.timer-type{display:flex;gap:8px;flex-wrap:wrap}.timer-type .btn.active{background:#eeeaff;color:#5046b0;box-shadow:inset 0 0 0 1px #8b81e4}
+.game-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.jump-button{min-width:170px;height:58px;font-size:18px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+.game-score{font-weight:750;color:#5046b0}
+.tool-panel{scroll-margin-top:88px}
+canvas{display:none}@media(max-width:620px){header{padding:0 14px}main{padding:20px 13px 40px}.grid{grid-template-columns:repeat(2,1fr)}.row{grid-template-columns:1fr}.tabs{display:grid;width:100%;grid-template-columns:repeat(3,1fr)}.tab{padding:8px 4px}.card{padding:16px}}
+body{min-height:100vh;background:radial-gradient(ellipse at 12% 0%,#eeecff 0,transparent 36%),linear-gradient(180deg,#f8f9fc 0%,#f1f3f8 100%);color:#20243a}
+header{position:sticky;top:0;z-index:5;height:72px;background:#ffffffed;backdrop-filter:blur(16px);box-shadow:0 1px 0 #e7e9f0}
+.logo{box-shadow:0 5px 12px #6558d344}
+.status{display:flex;align-items:center;gap:8px;border:1px solid #e8eaf1;border-radius:999px;background:#fff;padding:7px 12px;font-weight:650}
+.status:before{content:"";width:8px;height:8px;border-radius:50%;background:#a4a9b8;box-shadow:0 0 0 3px #a4a9b822}
+.status[data-connection="online"]:before{background:#20a66a;box-shadow:0 0 0 3px #20a66a22}
+.status[data-connection="connecting"]:before{background:#e5a12b;box-shadow:0 0 0 3px #e5a12b22;animation:status-pulse 1.4s ease-in-out infinite}
+@keyframes status-pulse{50%{box-shadow:0 0 0 6px #e5a12b10}}
+main{max-width:1040px;padding-top:32px}
+.tabs{border:1px solid #e3e5ee;background:#e9eaf1aa;backdrop-filter:blur(8px)}
+.tab,.mode,.btn,select,input{transition:background-color .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease,transform .18s ease}
+.tab,.btn,.mode{cursor:pointer}
+.tab:focus-visible,.mode:focus-visible,.btn:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #8e85ef88;outline-offset:2px}
+.panel.active{animation:panel-in .24s ease both}
+@keyframes panel-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+h1{font-size:clamp(25px,4vw,32px);letter-spacing:-.9px}
+.card{border-color:#e5e7ef;border-radius:17px;padding:22px;box-shadow:0 10px 28px #2025380a,0 1px 2px #20253808}
+.card>h2{letter-spacing:-.2px}
+.grid{gap:12px}
+.mode{min-height:88px;border-color:#e5e7ef;border-radius:13px;box-shadow:0 2px 6px #20253806}
+.mode b{width:30px;height:30px;display:grid;place-items:center;border-radius:9px;background:#f1efff;font-size:17px}
+.mode:hover{transform:translateY(-2px);border-color:#a9a2ed;box-shadow:0 8px 18px #5046b01a}
+.mode.active{border-color:#7569dc;box-shadow:inset 0 0 0 1px #7569dc,0 6px 16px #5046b014}
+.btn{min-height:44px;border-radius:10px;box-shadow:0 1px 2px #2025380a}
+.btn:hover:not(:disabled){transform:translateY(-1px);filter:brightness(.98);box-shadow:0 5px 12px #20253816}
+.btn:active:not(:disabled),.mode:active{transform:translateY(0) scale(.985)}
+.btn:disabled{opacity:.6;cursor:wait}
+.primary{box-shadow:0 4px 10px #6558d333}
+select,input{border-color:#dfe2eb;border-radius:10px}
+select:hover,input:hover{border-color:#b8bbcb}
+.network{gap:14px}
+.address{white-space:nowrap;border:1px solid #e6e3ff;border-radius:9px;background:#f5f3ff;padding:7px 10px}
+.notice{border:1px solid #e7e3ff;background:linear-gradient(135deg,#f5f3ff,#f0f3ff)}
+.msg{transition:color .18s ease}
+@media(max-width:620px){header{height:64px}.status{max-width:58vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:6px 9px}main{padding-top:23px}.card{padding:17px;border-radius:14px}.mode{min-height:80px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+</style></head><body><header><div class="logo">N</div><div class="brand">NIMO<small>DESK BUDDY</small></div><div class="status" id="status" aria-live="polite">Connecting…</div></header>
+<main><nav class="tabs"><button class="tab active" data-tab="home">Overview</button><button class="tab" data-tab="look">Appearance</button><button class="tab" data-tab="device">Device</button></nav>
+<section class="panel active" id="home"><h1>Your desk, your buddy.</h1><p>Choose what NIMO should show right now.</p>
+<div class="card"><h2>Display mode</h2><p>Choose a mode to open its options or launch it. Appearance also has style controls.</p><div class="grid">
+<button class="mode" data-mode="0"><b>◷</b>Clock</button><button class="mode" data-mode="1"><b>☀</b>Weather</button>
+<button class="mode" data-mode="2"><b>✳</b>Animation</button><button class="mode" data-mode="3"><b>☺</b>Expression</button>
+<button class="mode" data-mode="4"><b>▸</b>Dino game</button><button class="mode" data-mode="5"><b>↻</b>Auto</button>
+<button class="mode" data-mode="6"><b>◴</b>Timer</button></div><div class="msg" id="modeMsg"></div></div>
+<div class="card tool-panel" id="faceOptions" hidden><h2 id="faceOptionsTitle">Choose a style</h2><p id="faceOptionsHint">Select a style to show on NIMO.</p><div class="style-options" id="faceOptionsList"></div><div class="msg" id="faceMsg"></div></div>
+<div class="card tool-panel" id="timerPanel" hidden><h2>Timer & stopwatch</h2><p>Choose a tool, then control it from your phone or the desk buddy touch sensor.</p>
+<div class="timer-type"><button class="btn" id="stopwatchTab">Stopwatch</button><button class="btn" id="countdownTab">Countdown</button></div>
+<div class="timer-display" id="timerDisplay">00:00.0</div>
+<div id="stopwatchControls"><div class="btnline"><button class="btn primary" id="stopwatchToggle">Start</button><button class="btn" id="stopwatchReset">Reset</button></div></div>
+<div id="countdownControls" hidden><label for="countdownMinutesInput">Duration (minutes)</label><div class="row"><input id="countdownMinutesInput" type="number" min="1" max="60" step="1" value="5"><button class="btn" id="setCountdown">Set duration</button></div><div class="btnline"><button class="btn primary" id="countdownToggle">Start timer</button><button class="btn" id="countdownReset">Reset</button></div></div>
+<div class="msg" id="timerMsg"></div></div>
+<div class="card tool-panel" id="gamePanel" hidden><h2>Dino game</h2><p>Tap jump to clear each cactus. The game is shown on NIMO’s display.</p><div class="game-controls"><button class="btn primary jump-button" id="jumpButton">Jump</button><button class="btn" id="restartGame">Restart game</button><span class="game-score" id="gameStatus">Score 0</span></div><div class="msg" id="gameMsg"></div></div></section>
+<section class="panel" id="look"><h1>Appearance</h1><p>Explore each collection without mixing its options with other controls.</p><div class="card"><h2>Choose a style</h2><p>Pick a collection, then select one of its styles.</p>
+<label for="collection">Collection</label><select id="collection"><option value="clock">Clock faces</option><option value="weather">Weather faces</option><option value="animation">Animations</option><option value="expression">Expressions</option></select>
+<label for="style">Style</label><select id="style"></select><div class="btnline"><button class="btn primary" id="applyStyle">Show this style</button></div><div class="msg" id="styleMsg"></div></div></section>
+<section class="panel" id="device"><h1>Device settings</h1><p>Connection, local time, and device actions.</p>
+<div class="card"><h2>Connection</h2><p id="connectionDescription">Keep this dashboard available on NIMO's setup network while connecting it to your Wi-Fi.</p><div class="network"><div><strong id="networkName">Starting NIMO…</strong><small id="networkHint">Setup network</small></div><span class="address" id="address">192.168.1.4</span></div>
+<div id="offline" class="notice">Connect your phone to <strong>NIMO</strong>, password <strong>nimo-setup-24</strong>, then open <strong>http://192.168.1.4</strong>.</div>
+<label for="wifiList">Available Wi-Fi networks</label><div class="row"><select id="wifiList"><option value="">Scan to find networks</option></select><button class="btn" id="scanWifi">Scan networks</button></div><div class="hint">NIMO connects to 2.4 GHz Wi-Fi networks.</div>
+<label for="wifiPassword">Wi-Fi password</label><input id="wifiPassword" type="password" autocomplete="current-password" placeholder="Enter the selected network password">
+<div class="btnline"><button class="btn primary" id="connectWifi">Connect and save</button><span class="hint" id="wifiStatus">Saved network will reconnect automatically.</span></div><div class="msg" id="wifiMsg"></div></div>
+<div class="card"><h2>Set date and time</h2><p>Set the local time manually when internet time sync is unavailable.</p><div class="row"><div><label for="date">Date</label><input id="date" type="date"></div><div><label for="time">Time</label><input id="time" type="time"></div></div>
+<div class="btnline"><button class="btn primary" id="setTime">Set device time</button><span class="hint" id="timeState">Checking device time…</span></div><div class="msg" id="timeMsg"></div>
+<div class="notice">Without internet sync or a battery-backed RTC, the clock keeps time only while powered. Set it again after a power cycle.</div></div>
+<div class="card"><h2>Restart device</h2><p>Restart NIMO and reconnect to its dashboard after it comes back online.</p><button class="btn danger" id="reboot">Restart NIMO</button><div class="msg" id="deviceMsg"></div></div></section></main>
+<script>
+const $=id=>document.getElementById(id);
+const choices={clock:['Big 12-hour','Big 24-hour','Split digital','Seconds bar','World clock','Minimal 12-hour'],weather:['Current weather','Weather summary','3-day forecast','Conditions card','Feels-like face','Icon weather'],animation:['Snow','Rain','Clouds','Bubbles','Stars','Hearts','Fireflies','Aurora','Falling leaves','Comets','Fireworks','Spiral','Tunnel','DNA','Girl & flower','Boy & bird'],expression:['Happy','Love','Surprised','Sleepy','Angry','Sad','Excited','Suspicious','Dizzy','Neutral','Wink','Crying','Laughing','Confused','Bored','Cool','Shy','Starstruck','Scared','Grumpy','Embarrassed','Sneezing']};
+const selected={clock:0,weather:0,animation:0,expression:1};
+function msg(id,text,bad=false){$(id).textContent=text;$(id).classList.toggle('bad',bad)}
+async function post(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});const text=await r.text();if(!r.ok)throw Error(text||('HTTP '+r.status));return text}
+function selectMode(value){document.querySelectorAll('.mode').forEach(b=>b.classList.toggle('active',b.dataset.mode===String(value)))}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.panel').forEach(e=>e.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')});
+let timerState={page:0,stopwatchMs:0,stopwatchRunning:false,countdownMs:300000,countdownRunning:false,countdownFinished:false,countdownMinutes:5,stamp:performance.now()};
+let countdownInputDirty=false;
+function hideModePanels(){['faceOptions','timerPanel','gamePanel'].forEach(id=>$(id).hidden=true)}
+function showFaceOptions(kind){const titles={clock:'Clock faces',weather:'Weather faces',animation:'Animations',expression:'Expressions'};const modes={clock:0,weather:1,animation:2,expression:3};hideModePanels();$('faceOptions').hidden=false;$('faceOptionsTitle').textContent=titles[kind];$('faceOptionsHint').textContent='Choose what to display on NIMO.';const list=$('faceOptionsList');list.replaceChildren(...choices[kind].map((name,index)=>{const button=document.createElement('button');button.type='button';button.className='style-option'+(selected[kind]===index?' active':'');button.textContent=name;button.onclick=async()=>{try{msg('faceMsg',await post('/api/control',{command:kind,value:index}));selected[kind]=index;selectMode(modes[kind]);showFaceOptions(kind)}catch(e){msg('faceMsg',e.message,true)}};return button}));$('faceOptions').scrollIntoView({behavior:'smooth',block:'nearest'})}
+async function selectModeOnDevice(value){await post('/api/control',{command:'mode',value});selectMode(value)}
+document.querySelectorAll('.mode').forEach(b=>b.onclick=async()=>{const mode=Number(b.dataset.mode);msg('modeMsg','');hideModePanels();if(mode>=0&&mode<=3){const kind=['clock','weather','animation','expression'][mode];showFaceOptions(kind);return}if(mode===6){selectMode(mode);$('timerPanel').hidden=false;$('timerPanel').scrollIntoView({behavior:'smooth',block:'nearest'});try{await post('/api/timer',{action:timerState.page===1?'select-countdown':'select-stopwatch'});await refreshStatus()}catch(e){msg('timerMsg',e.message,true)}return}if(mode===4){selectMode(mode);$('gamePanel').hidden=false;$('gamePanel').scrollIntoView({behavior:'smooth',block:'nearest'});try{await selectModeOnDevice(mode);msg('gameMsg','Game ready. Tap Jump whenever a cactus approaches.');refreshStatus()}catch(e){msg('gameMsg',e.message,true)}return}try{await selectModeOnDevice(mode);msg('modeMsg','Display mode changed.')}catch(e){msg('modeMsg',e.message,true)}});
+function fillStyles(){const kind=$('collection').value;$('style').replaceChildren(...choices[kind].map((n,i)=>new Option(n,i)));$('style').value=selected[kind]}
+$('collection').onchange=fillStyles;
+$('applyStyle').onclick=async()=>{const kind=$('collection').value,value=$('style').value;try{msg('styleMsg',await post('/api/control',{command:kind,value}));selected[kind]=Number(value);selectMode(({clock:0,weather:1,animation:2,expression:3})[kind])}catch(e){msg('styleMsg',e.message,true)}};
+async function timerAction(action,extra={}){try{msg('timerMsg',await post('/api/timer',{action,...extra}));if(action==='countdown-set')countdownInputDirty=false;await refreshStatus()}catch(e){msg('timerMsg',e.message,true)}}
+$('stopwatchTab').onclick=()=>timerAction('select-stopwatch');
+$('countdownTab').onclick=()=>timerAction('select-countdown');
+$('stopwatchToggle').onclick=()=>timerAction(timerState.stopwatchRunning?'stopwatch-pause':'stopwatch-start');
+$('stopwatchReset').onclick=()=>timerAction('stopwatch-reset');
+$('countdownToggle').onclick=()=>timerAction(timerState.countdownRunning?'countdown-pause':'countdown-start');
+$('countdownReset').onclick=()=>timerAction('countdown-reset');
+$('setCountdown').onclick=()=>timerAction('countdown-set',{minutes:$('countdownMinutesInput').value});
+$('countdownMinutesInput').oninput=()=>countdownInputDirty=true;
+$('jumpButton').onclick=async()=>{try{msg('gameMsg',await post('/api/game',{action:'jump'}));refreshStatus()}catch(e){msg('gameMsg',e.message,true)}};
+$('restartGame').onclick=async()=>{try{msg('gameMsg',await post('/api/game',{action:'restart'}));refreshStatus()}catch(e){msg('gameMsg',e.message,true)}};
+window.addEventListener('keydown',e=>{if(e.code==='Space'&&!$('gamePanel').hidden&&!['BUTTON','INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('jumpButton').click()}});
+function formatStopwatch(ms){const tenths=Math.floor(ms/100)%10,totalSeconds=Math.floor(ms/1000),seconds=totalSeconds%60,minutes=Math.floor(totalSeconds/60)%60,hours=Math.floor(totalSeconds/3600);return hours?`${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`:`${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}.${tenths}`}
+function paintTimer(){const elapsed=performance.now()-timerState.stamp;let ms=timerState.page===0?timerState.stopwatchMs+(timerState.stopwatchRunning?elapsed:0):Math.max(0,timerState.countdownMs-(timerState.countdownRunning?elapsed:0));$('timerDisplay').textContent=timerState.page===0?formatStopwatch(ms):`${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.ceil(ms/1000)%60).padStart(2,'0')}`;$('stopwatchToggle').textContent=timerState.stopwatchRunning?'Pause':'Start';$('countdownToggle').textContent=timerState.countdownRunning?'Pause':timerState.countdownFinished?'Start again':'Start timer';$('stopwatchTab').classList.toggle('active',timerState.page===0);$('countdownTab').classList.toggle('active',timerState.page===1);$('stopwatchControls').hidden=timerState.page!==0;$('countdownControls').hidden=timerState.page!==1}
+setInterval(paintTimer,100);
+let timeInputDirty=false;
+$('setTime').onclick=async()=>{if(!$('date').value||!$('time').value){msg('timeMsg','Select both the date and time.',true);return}try{msg('timeMsg',await post('/api/time',{date:$('date').value,time:$('time').value}));timeInputDirty=false;$('timeState').textContent='Device time is set.';refreshStatus()}catch(e){msg('timeMsg',e.message,true)}};
+$('date').oninput=$('time').oninput=()=>timeInputDirty=true;
+$('reboot').onclick=async()=>{if(!confirm('Restart NIMO now?'))return;try{msg('deviceMsg',await post('/api/reboot',{}));$('reboot').disabled=true}catch(e){msg('deviceMsg',e.message,true)}};
+async function scanNetworks(){const button=$('scanWifi');button.disabled=true;$('wifiList').replaceChildren(new Option('Scanning for networks…',''));msg('wifiMsg','Searching nearby Wi-Fi networks…');try{let result;do{const r=await fetch('/api/wifi/scan');result=await r.json();if(!r.ok)throw Error(result.error||('HTTP '+r.status));if(result.scanning)await new Promise(resolve=>setTimeout(resolve,1200))}while(result.scanning);if(result.error)throw Error(result.error);if(!result.networks.length){$('wifiList').replaceChildren(new Option('No networks found — scan again',''));msg('wifiMsg','No networks were found. Make sure NIMO is not too far from the router.',true);return}const options=result.networks.map(n=>{const label=`${n.ssid}${n.secured?'  ·  secured':''}  ·  ${n.rssi} dBm`;return new Option(label,n.ssid)});$('wifiList').replaceChildren(...options);msg('wifiMsg',`${options.length} network${options.length===1?'':'s'} found. Choose yours.`)}catch(e){$('wifiList').replaceChildren(new Option('Scan to find networks',''));msg('wifiMsg',e.message,true)}finally{button.disabled=false}}
+$('scanWifi').onclick=scanNetworks;
+$('connectWifi').onclick=async()=>{const selectedSsid=$('wifiList').value;const selectedPassword=$('wifiPassword').value;if(!selectedSsid){msg('wifiMsg','Scan and select a Wi-Fi network first.',true);return}try{msg('wifiMsg',await post('/api/wifi/connect',{ssid:selectedSsid,password:selectedPassword}));$('wifiStatus').textContent='Connecting. NIMO setup Wi-Fi stays available.'}catch(e){msg('wifiMsg',e.message,true)}};
+function loadStatus(s){
+  $('status').textContent=s.online?'Connected to '+s.ssid:s.connecting?'Connecting to Wi-Fi...':s.ap?'NIMO setup Wi-Fi active':'Wi-Fi unavailable';
+  $('status').dataset.connection=s.online?'online':s.connecting?'connecting':'offline';
+  $('networkName').textContent=s.online?(s.ssid||'Wi-Fi connected'):s.ap?'NIMO setup network':'Wi-Fi unavailable';
+  $('networkHint').textContent=s.online?'Home Wi-Fi address - open this IP on the same network':s.ap?'Setup Wi-Fi is ready while NIMO connects':'Check device Wi-Fi';
+  $('address').textContent=s.online&&s.stationIp?s.stationIp:s.ap?(s.apIp||'192.168.1.4'):'-';
+  $('offline').hidden=s.online||!s.ap;
+  $('connectionDescription').textContent=s.online?'Use this home Wi-Fi address from a device on the same network. NIMO setup Wi-Fi remains available for recovery.':'NIMO setup Wi-Fi stays available while you connect it to your home Wi-Fi.';
+  if(s.wifiMessage){const statusMessage=s.wifiMessage.toLowerCase();msg('wifiMsg',s.wifiMessage,statusMessage.includes('failed')||statusMessage.includes('could not save'))}
+  if(s.online){$('wifiStatus').textContent=s.wifiMessage.startsWith('Connected and saved.')?'Network saved. NIMO reconnects automatically when it is in range.':'Connected to '+s.ssid+'.';if(s.wifiMessage.startsWith('Connected and saved.'))$('wifiPassword').value=''}
+  selectMode(s.mode);selected.clock=s.clock;selected.weather=s.weather;selected.animation=s.animation;selected.expression=s.expression;
+  timerState={page:s.timerPage,stopwatchMs:s.stopwatchMs,stopwatchRunning:s.stopwatchRunning,countdownMs:s.countdownMs,countdownRunning:s.countdownRunning,countdownFinished:s.countdownFinished,countdownMinutes:s.countdownMinutes,stamp:performance.now()};
+  if(!countdownInputDirty&&document.activeElement!==$('countdownMinutesInput'))$('countdownMinutesInput').value=s.countdownMinutes;
+  paintTimer();$('gameStatus').textContent=s.gameOver?'Game over - score '+s.gameScore:'Score '+s.gameScore;$('jumpButton').disabled=s.gameOver;$('jumpButton').textContent=s.gameOver?'Game over':'Jump';fillStyles();
+  if(s.timeValid&&!timeInputDirty){$('date').value=s.date;$('time').value=s.time;$('timeState').textContent=s.date+' '+s.time}else if(!s.timeValid)$('timeState').textContent='Time is not synchronized.'
+}
+function refreshStatus(){return fetch('/api/status').then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json()}).then(loadStatus).catch(e=>{$('status').textContent='Device unavailable';$('status').dataset.connection='offline';msg('modeMsg',e.message,true)})}
+refreshStatus();setInterval(refreshStatus,4000);
+</script></body></html>
+)rawliteral";
+
+bool readControlValue(int& value) {
+  if (!controlServer.hasArg("value")) return false;
+  String text = controlServer.arg("value");
+  if (text.length() == 0) return false;
+  char* end = nullptr;
+  long parsed = strtol(text.c_str(), &end, 10);
+  if (*end != '\0' || parsed < 0 || parsed > 1000) return false;
+  value = (int)parsed;
+  return true;
+}
+
+void handleControlPage() {
+  controlServer.send_P(200, "text/html; charset=utf-8", CONTROL_PAGE);
+}
+
+void appendJsonString(String& output, const String& value) {
+  output += '"';
+  for (size_t i = 0; i < value.length(); i++) {
+    uint8_t c = (uint8_t)value[i];
+    if (c == '"' || c == '\\') {
+      output += '\\';
+      output += (char)c;
+    } else if (c < 0x20) {
+      char escaped[7];
+      snprintf(escaped, sizeof(escaped), "\\u%04x", c);
+      output += escaped;
+    } else {
+      output += (char)c;
+    }
+  }
+  output += '"';
+}
+
+void handleControlStatus() {
+  struct tm localTime;
+  bool timeValid = getLocalTime(&localTime, 10) && localTime.tm_year >= 120;
+  unsigned long stopwatchMs = stopwatchElapsedMs;
+  if (stopwatchRunning) stopwatchMs += millis() - stopwatchStartedAt;
+  unsigned long countdownMs = countdownRemainingMs;
+  if (countdownRunning) {
+    unsigned long elapsed = millis() - countdownStartedAt;
+    countdownMs = elapsed >= countdownRemainingMs ? 0 : countdownRemainingMs - elapsed;
+  }
+  char dateText[11] = "";
+  char timeText[6] = "";
+  if (timeValid) {
+    strftime(dateText, sizeof(dateText), "%Y-%m-%d", &localTime);
+    strftime(timeText, sizeof(timeText), "%H:%M", &localTime);
+  }
+  String json = "{\"mode\":" + String((int)currentMode)
+    + ",\"expression\":" + String(selectedExpression)
+    + ",\"animation\":" + String(selectedAnimation)
+    + ",\"clock\":" + String(clockStyle)
+    + ",\"weather\":" + String(weatherStyle)
+    + ",\"timerPage\":" + String(timerPage)
+    + ",\"stopwatchMs\":" + String(stopwatchMs)
+    + ",\"stopwatchRunning\":" + String(stopwatchRunning ? "true" : "false")
+    + ",\"countdownMs\":" + String(countdownMs)
+    + ",\"countdownRunning\":" + String(countdownRunning ? "true" : "false")
+    + ",\"countdownFinished\":" + String(countdownFinished ? "true" : "false")
+    + ",\"countdownMinutes\":" + String(countdownMinutes)
+    + ",\"gameScore\":" + String(gameScore)
+    + ",\"gameOver\":" + String(gameOver ? "true" : "false")
+    + ",\"online\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false")
+    + ",\"ap\":" + String(accessPointMode ? "true" : "false")
+    + ",\"connecting\":" + String(wifiConnectPending ? "true" : "false")
+    + ",\"ssid\":";
+  appendJsonString(json, WiFi.status() == WL_CONNECTED ? WiFi.SSID() : configuredWifiSsid);
+  json += ",\"stationIp\":";
+  appendJsonString(json, WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String(""));
+  json += ",\"apIp\":";
+  appendJsonString(json, accessPointMode ? WiFi.softAPIP().toString() : String(""));
+  json += ",\"wifiMessage\":";
+  appendJsonString(json, wifiConnectionMessage);
+  json += ",\"timeValid\":" + String(timeValid ? "true" : "false")
+    + ",\"date\":\"" + dateText + "\",\"time\":\"" + timeText + "\"}";
+  controlServer.send(200, "application/json", json);
+}
+
+void handleWifiScan() {
+  if (!wifiScanInProgress) {
+    WiFi.scanDelete();
+    int startResult = WiFi.scanNetworks(true, false);
+    if (startResult == WIFI_SCAN_FAILED) {
+      controlServer.send(503, "application/json", "{\"scanning\":false,\"error\":\"Could not start Wi-Fi scan.\"}");
+      return;
+    }
+    wifiScanInProgress = true;
+  }
+
+  int networkCount = WiFi.scanComplete();
+  if (networkCount == WIFI_SCAN_RUNNING) {
+    controlServer.send(200, "application/json", "{\"scanning\":true}");
+    return;
+  }
+  wifiScanInProgress = false;
+  if (networkCount == WIFI_SCAN_FAILED) {
+    WiFi.scanDelete();
+    controlServer.send(503, "application/json", "{\"scanning\":false,\"error\":\"Wi-Fi scan failed. Please try again.\"}");
+    return;
+  }
+
+  String json = "{\"scanning\":false,\"networks\":[";
+  bool first = true;
+  for (int i = 0; i < networkCount; i++) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) continue;
+    if (!first) json += ',';
+    first = false;
+    json += "{\"ssid\":";
+    appendJsonString(json, ssid);
+    json += ",\"rssi\":" + String(WiFi.RSSI(i));
+    json += ",\"secured\":" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "false" : "true") + "}";
+  }
+  json += "]}";
+  WiFi.scanDelete();
+  controlServer.send(200, "application/json", json);
+}
+
+void handleWifiConnect() {
+  if (!controlServer.hasArg("ssid")) {
+    controlServer.send(400, "text/plain", "Choose a Wi-Fi network first.");
+    return;
+  }
+  String ssid = controlServer.arg("ssid");
+  String password = controlServer.arg("password");
+  if (ssid.length() == 0 || ssid.length() > 32 ||
+      password.length() > 63 ||
+      (password.length() > 0 && password.length() < 8)) {
+    controlServer.send(400, "text/plain", "SSID must be 1–32 characters; Wi-Fi passwords must be empty or 8–63 characters.");
+    return;
+  }
+  if (wifiConnectPending) {
+    controlServer.send(409, "text/plain", "A Wi-Fi connection attempt is already in progress.");
+    return;
+  }
+
+  if (wifiScanInProgress) {
+    WiFi.scanDelete();
+    wifiScanInProgress = false;
+  }
+  pendingWifiSsid = ssid;
+  pendingWifiPassword = password;
+  wifiConnectPending = true;
+  wifiConnectStartedAt = millis();
+  wifiConnectionMessage = "Connecting to " + ssid + "…";
+  stationWasConnected = WiFi.status() == WL_CONNECTED;
+  WiFi.disconnect(false, false);
+  if (password.length() == 0) WiFi.begin(pendingWifiSsid.c_str());
+  else WiFi.begin(pendingWifiSsid.c_str(), pendingWifiPassword.c_str());
+  controlServer.send(202, "text/plain", "Connecting to " + ssid + ". Keep the NIMO setup network connected.");
+}
+
+void handleControlCommand() {
+  int value;
+  if (!readControlValue(value)) {
+    controlServer.send(400, "text/plain", "Missing or invalid control value.");
+    return;
+  }
+
+  String command = controlServer.arg("command");
+  if (command == "mode" && value <= MODE_TIMER) {
+    currentMode = (DeskMode)value;
+    menuOpen = false;
+    menuDepth = 0;
+    if (currentMode == MODE_AUTO) {
+      autoModePage = 0;
+      autoModeStarted = millis();
+    } else if (currentMode == MODE_GAMES) {
+      dinoY = 48;
+      dinoVelocityY = 0;
+      obstacleX = SCREEN_WIDTH;
+      gameScore = 0;
+      gameOver = false;
+      lastGameUpdate = millis();
+    }
+  } else if (command == "expression" && value < FACE_EXPRESSION_COUNT) {
+    setFaceExpression(value);
+    currentMode = MODE_FACE_EXPRESSIONS;
+    settings.putInt("expression", selectedExpression);
+  } else if (command == "animation" && value < 16) {
+    selectedAnimation = value;
+    animationSceneIndex = value;
+    currentMode = MODE_ANIMATION;
+    resetSceneParticles();
+    settings.putInt("animation", selectedAnimation);
+  } else if (command == "clock" && value < 6) {
+    clockStyle = value;
+    currentMode = MODE_CLOCK_FACES;
+    settings.putInt("clock", clockStyle);
+  } else if (command == "weather" && value < 6) {
+    weatherStyle = value;
+    currentMode = MODE_WEATHER_FACE;
+    settings.putInt("weather", weatherStyle);
+  } else {
+    controlServer.send(400, "text/plain", "Unknown command or out-of-range value.");
+    return;
+  }
+  menuOpen = false;
+  menuDepth = 0;
+  controlServer.send(200, "text/plain", "Control applied.");
+}
+
+void handleTimerCommand() {
+  if (!controlServer.hasArg("action")) {
+    controlServer.send(400, "text/plain", "Timer action is required.");
+    return;
+  }
+
+  String action = controlServer.arg("action");
+  if (action == "select-stopwatch") {
+    currentMode = MODE_TIMER;
+    timerPage = 0;
+  } else if (action == "select-countdown") {
+    currentMode = MODE_TIMER;
+    timerPage = 1;
+  } else if (action == "stopwatch-start") {
+    if (!stopwatchRunning) {
+      stopwatchStartedAt = millis();
+      stopwatchRunning = true;
+    }
+    timerPage = 0;
+    currentMode = MODE_TIMER;
+  } else if (action == "stopwatch-pause") {
+    if (stopwatchRunning) {
+      stopwatchElapsedMs += millis() - stopwatchStartedAt;
+      stopwatchRunning = false;
+    }
+    timerPage = 0;
+    currentMode = MODE_TIMER;
+  } else if (action == "stopwatch-reset") {
+    stopwatchRunning = false;
+    stopwatchElapsedMs = 0;
+    stopwatchStartedAt = 0;
+    timerPage = 0;
+    currentMode = MODE_TIMER;
+  } else if (action == "countdown-start") {
+    if (!countdownRunning) {
+      if (countdownFinished || countdownRemainingMs == 0) resetCountdownToSetting();
+      countdownStartedAt = millis();
+      countdownRunning = true;
+      countdownFinished = false;
+    }
+    timerPage = 1;
+    currentMode = MODE_TIMER;
+  } else if (action == "countdown-pause") {
+    if (countdownRunning) {
+      unsigned long elapsed = millis() - countdownStartedAt;
+      countdownRemainingMs = elapsed >= countdownRemainingMs ? 0 : countdownRemainingMs - elapsed;
+      countdownRunning = false;
+      countdownFinished = countdownRemainingMs == 0;
+    }
+    timerPage = 1;
+    currentMode = MODE_TIMER;
+  } else if (action == "countdown-reset") {
+    resetCountdownToSetting();
+    timerPage = 1;
+    currentMode = MODE_TIMER;
+  } else if (action == "countdown-set") {
+    if (!controlServer.hasArg("minutes")) {
+      controlServer.send(400, "text/plain", "Countdown duration is required.");
+      return;
+    }
+    String minutesText = controlServer.arg("minutes");
+    char* end = nullptr;
+    long minutes = strtol(minutesText.c_str(), &end, 10);
+    if (minutesText.length() == 0 || *end != '\0' || minutes < 1 || minutes > 60) {
+      controlServer.send(400, "text/plain", "Countdown duration must be from 1 to 60 minutes.");
+      return;
+    }
+    countdownMinutes = (int)minutes;
+    resetCountdownToSetting();
+    timerPage = 1;
+    currentMode = MODE_TIMER;
+  } else {
+    controlServer.send(400, "text/plain", "Unknown timer action.");
+    return;
+  }
+
+  menuOpen = false;
+  menuDepth = 0;
+  controlServer.send(200, "text/plain", "Timer updated.");
+}
+
+void handleGameCommand() {
+  if (!controlServer.hasArg("action")) {
+    controlServer.send(400, "text/plain", "Game action is required.");
+    return;
+  }
+  String action = controlServer.arg("action");
+  if (action == "restart") {
+    currentMode = MODE_GAMES;
+    dinoY = 48;
+    dinoVelocityY = 0;
+    obstacleX = SCREEN_WIDTH;
+    gameScore = 0;
+    gameOver = false;
+    lastGameUpdate = millis();
+  } else if (action == "jump") {
+    if (currentMode != MODE_GAMES) {
+      controlServer.send(409, "text/plain", "Select the Dino game before jumping.");
+      return;
+    }
+    if (gameOver) {
+      controlServer.send(409, "text/plain", "Game over. Restart the game to play again.");
+      return;
+    }
+    jumpDino();
+  } else {
+    controlServer.send(400, "text/plain", "Unknown game action.");
+    return;
+  }
+  menuOpen = false;
+  menuDepth = 0;
+  controlServer.send(200, "text/plain", action == "jump" ? "Jump!" : "Game restarted.");
+}
+
+void handleSetDeviceTime() {
+  if (!controlServer.hasArg("date") || !controlServer.hasArg("time")) {
+    controlServer.send(400, "text/plain", "Date and time are required.");
+    return;
+  }
+
+  String dateValue = controlServer.arg("date");
+  String timeValue = controlServer.arg("time");
+  int year, month, day, hour, minute;
+  bool numericDateTime = dateValue.length() == 10 && timeValue.length() == 5;
+  for (size_t i = 0; numericDateTime && i < dateValue.length(); i++) {
+    if (i != 4 && i != 7 && (dateValue[i] < '0' || dateValue[i] > '9')) {
+      numericDateTime = false;
+    }
+  }
+  for (size_t i = 0; numericDateTime && i < timeValue.length(); i++) {
+    if (i != 2 && (timeValue[i] < '0' || timeValue[i] > '9')) {
+      numericDateTime = false;
+    }
+  }
+  if (!numericDateTime ||
+      sscanf(dateValue.c_str(), "%4d-%2d-%2d", &year, &month, &day) != 3 ||
+      sscanf(timeValue.c_str(), "%2d:%2d", &hour, &minute) != 2 ||
+      dateValue[4] != '-' || dateValue[7] != '-' || timeValue[2] != ':' ||
+      year < 2020 || year > 2099 || month < 1 || month > 12 ||
+      hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    controlServer.send(400, "text/plain", "Invalid date or time.");
+    return;
+  }
+
+  static const uint8_t daysPerMonth[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
+  int maxDay = daysPerMonth[month - 1];
+  bool leapYear = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leapYear) maxDay = 29;
+  if (day < 1 || day > maxDay) {
+    controlServer.send(400, "text/plain", "Invalid calendar date.");
+    return;
+  }
+
+  struct tm local = {};
+  local.tm_year = year - 1900;
+  local.tm_mon = month - 1;
+  local.tm_mday = day;
+  local.tm_hour = hour;
+  local.tm_min = minute;
+  local.tm_isdst = -1;
+  time_t epoch = mktime(&local);
+  if (epoch < 0) {
+    controlServer.send(400, "text/plain", "Could not convert local date and time.");
+    return;
+  }
+  struct timeval now = {};
+  now.tv_sec = epoch;
+  if (settimeofday(&now, nullptr) != 0) {
+    controlServer.send(500, "text/plain", "Could not set device time.");
+    return;
+  }
+  controlServer.send(200, "text/plain", "Device date and time updated.");
+}
+
+void handleReboot() {
+  controlServer.send(200, "text/plain", "Restarting NIMO…");
+  delay(250);
+  ESP.restart();
+}
+
+void startControlServer() {
+  controlServer.on("/", HTTP_GET, handleControlPage);
+  controlServer.on("/api/status", HTTP_GET, handleControlStatus);
+  controlServer.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
+  controlServer.on("/api/wifi/connect", HTTP_POST, handleWifiConnect);
+  controlServer.on("/api/control", HTTP_POST, handleControlCommand);
+  controlServer.on("/api/timer", HTTP_POST, handleTimerCommand);
+  controlServer.on("/api/game", HTTP_POST, handleGameCommand);
+  controlServer.on("/api/time", HTTP_POST, handleSetDeviceTime);
+  controlServer.on("/api/reboot", HTTP_POST, handleReboot);
+  controlServer.onNotFound([]() {
+    controlServer.send(404, "text/plain", "Not found.");
+  });
+  controlServer.begin();
+  Serial.println("Local control panel started on port 80.");
 }
 
 // ==================================================
@@ -1663,8 +2257,8 @@ void updateDinoGame() {
   if (dinoY > 48) {
     dinoY = 48;
     dinoVelocityY = 0;
-  } else if (dinoY < 15) {
-    dinoY = 15;
+  } else if (dinoY < 25) {
+    dinoY = 25;
     dinoVelocityY = 0;
   }
 
@@ -1688,27 +2282,48 @@ void drawDinoGame() {
   display.setCursor(SCREEN_WIDTH - scoreWidth - 4, 9);
   display.print(scoreText);
   display.drawLine(0, 51, SCREEN_WIDTH, 51, SSD1306_WHITE);
-
-  int dinoTop = (int)dinoY - 13;
-  display.fillRect(18, dinoTop + 5, 10, 8, SSD1306_WHITE);
-  display.fillRect(24, dinoTop, 8, 8, SSD1306_WHITE);
-  display.drawPixel(29, dinoTop + 2, SSD1306_BLACK);
-  display.fillRect(20, (int)dinoY - 2, 3, 4, SSD1306_WHITE);
-  if (dinoY >= 47) {
-    int legOffset = (millis() / 120) % 2 == 0 ? 2 : 0;
-    display.drawLine(21, (int)dinoY - 1, 19 + legOffset, 49, SSD1306_WHITE);
-    display.drawLine(26, (int)dinoY - 1, 27 - legOffset, 49, SSD1306_WHITE);
-  } else {
-    int bentLegY = (int)dinoY + 2;
-    display.drawLine(21, (int)dinoY - 1, 19, bentLegY + 2, SSD1306_WHITE);
-    display.drawLine(26, (int)dinoY - 1, 28, bentLegY + 2, SSD1306_WHITE);
-    display.drawLine(19, bentLegY + 2, 22, bentLegY + 2, SSD1306_WHITE);
-    display.drawLine(27, bentLegY + 2, 30, bentLegY + 2, SSD1306_WHITE);
+  for (int x = 5; x < SCREEN_WIDTH; x += 19) {
+    int groundX = (x - (millis() / 35) % 19 + 19) % SCREEN_WIDTH;
+    display.drawPixel(groundX, 54, SSD1306_WHITE);
+    display.drawPixel(groundX + 5, 58, SSD1306_WHITE);
   }
 
-  if (obstacleX < SCREEN_WIDTH && obstacleX > -8) {
-    display.fillRect((int)obstacleX, 37, 7, 14, SSD1306_WHITE);
-    display.fillRect((int)obstacleX - 3, 42, 3, 4, SSD1306_WHITE);
+  const int baseY = (int)dinoY;
+  const int topY = baseY - 22;
+  const bool runningFrame = dinoY >= 47 && (millis() / 110) % 2 == 0;
+  display.fillRoundRect(16, topY + 10, 20, 12, 4, SSD1306_WHITE);
+  display.fillRoundRect(25, topY + 2, 13, 11, 3, SSD1306_WHITE);
+  display.fillRoundRect(32, topY + 7, 9, 5, 2, SSD1306_WHITE);
+  display.fillTriangle(16, topY + 11, 9, topY + 14, 17, topY + 16, SSD1306_WHITE);
+  display.drawLine(23, topY + 8, 25, topY + 11, SSD1306_WHITE);
+  display.drawLine(28, topY + 6, 30, topY + 9, SSD1306_WHITE);
+  display.drawPixel(35, topY + 5, SSD1306_BLACK);
+  display.drawPixel(38, topY + 10, SSD1306_BLACK);
+  display.drawLine(29, topY + 15, 33, topY + 16, SSD1306_BLACK);
+  display.drawLine(27, topY + 18, 30, topY + 16, SSD1306_BLACK);
+
+  if (runningFrame) {
+    display.drawLine(22, baseY - 3, 18, baseY, SSD1306_WHITE);
+    display.drawLine(18, baseY, 22, baseY, SSD1306_WHITE);
+    display.drawLine(31, baseY - 3, 34, baseY - 1, SSD1306_WHITE);
+    display.drawLine(34, baseY - 1, 32, baseY, SSD1306_WHITE);
+  } else {
+    display.drawLine(22, baseY - 3, 22, baseY, SSD1306_WHITE);
+    display.drawLine(22, baseY, 26, baseY, SSD1306_WHITE);
+    display.drawLine(31, baseY - 3, 31, baseY, SSD1306_WHITE);
+    display.drawLine(31, baseY, 35, baseY, SSD1306_WHITE);
+  }
+
+  if (obstacleX < SCREEN_WIDTH && obstacleX > -15) {
+    const int cactusX = (int)obstacleX;
+    const int cactusBase = 51;
+    display.fillRoundRect(cactusX + 4, 34, 7, cactusBase - 34, 3, SSD1306_WHITE);
+    display.fillRoundRect(cactusX, 39, 5, 8, 2, SSD1306_WHITE);
+    display.fillRoundRect(cactusX - 2, 34, 7, 7, 2, SSD1306_WHITE);
+    display.drawLine(cactusX + 2, 38, cactusX + 2, 42, SSD1306_BLACK);
+    display.fillRoundRect(cactusX + 10, 42, 5, 7, 2, SSD1306_WHITE);
+    display.fillRoundRect(cactusX + 12, 38, 6, 6, 2, SSD1306_WHITE);
+    display.drawLine(cactusX + 14, 42, cactusX + 14, 45, SSD1306_BLACK);
   }
 
   if (gameOver) {
@@ -1761,6 +2376,111 @@ void playBootAnimation() {
   delay(2000);
 }
 
+void showNetworkAddress(const char* networkLabel, const IPAddress& address,
+                        const char* setupPassword) {
+  display.clearDisplay();
+  display.setFont(NULL);
+  display.setTextColor(SSD1306_WHITE);
+  const char* title = "NIMO CONTROL PANEL";
+  int16_t x, y;
+  uint16_t width, height;
+  display.getTextBounds(title, 0, 0, &x, &y, &width, &height);
+  display.setCursor((SCREEN_WIDTH - width) / 2, 4);
+  display.print(title);
+
+  display.getTextBounds(networkLabel, 0, 0, &x, &y, &width, &height);
+  display.setCursor((SCREEN_WIDTH - width) / 2, 17);
+  display.print(networkLabel);
+
+  String ipText = address.toString();
+  display.getTextBounds(ipText, 0, 0, &x, &y, &width, &height);
+  display.setCursor((SCREEN_WIDTH - width) / 2, setupPassword ? 30 : 39);
+  display.print(ipText);
+  if (setupPassword) {
+    display.setCursor(12, 42);
+    display.print("PW: ");
+    display.print(setupPassword);
+  }
+  display.setCursor(1, 55);
+  display.print("OPEN IN PHONE BROWSER");
+  display.display();
+}
+
+void updateWifiConnection() {
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  const unsigned long now = millis();
+
+  if (connected) {
+    if (!stationWasConnected) {
+      stationWasConnected = true;
+      lastWifiRetryAt = now;
+      savedNetworkFailureReported = false;
+      if (wifiConnectPending) {
+        configuredWifiSsid = pendingWifiSsid;
+        configuredWifiPassword = pendingWifiPassword;
+        size_t savedSsidBytes = settings.putString("wifi_ssid", configuredWifiSsid);
+        size_t savedPasswordBytes = settings.putString("wifi_password", configuredWifiPassword);
+        pendingWifiSsid = "";
+        pendingWifiPassword = "";
+        wifiConnectPending = false;
+        if (savedSsidBytes > 0 && savedPasswordBytes > 0) {
+          wifiConnectionMessage = "Connected and saved. NIMO will reconnect when this network is in range.";
+        } else {
+          wifiConnectionMessage = "Connected, but could not save Wi-Fi settings. They may need to be entered again after restart.";
+          Serial.println(wifiConnectionMessage);
+        }
+      } else {
+        wifiConnectionMessage = "Connected to " + WiFi.SSID() + ".";
+      }
+      Serial.print("Wi-Fi connected to ");
+      Serial.print(WiFi.SSID());
+      Serial.print("; IP: ");
+      Serial.println(WiFi.localIP());
+      configTime(0, 0, "pool.ntp.org");
+      setenv("TZ", TIMEZONE, 1);
+      tzset();
+      lastWeatherUpdate = now - 600001UL;
+      networkInfoUntil = now + 10000;
+    }
+    return;
+  }
+
+  if (stationWasConnected) {
+    stationWasConnected = false;
+    stationConnectStartedAt = now;
+    savedNetworkFailureReported = false;
+    wifiConnectionMessage = wifiConnectPending
+      ? "Connecting to " + pendingWifiSsid + "…"
+      : "Wi-Fi disconnected. NIMO will retry the saved network.";
+  }
+
+  if (wifiConnectPending && now - wifiConnectStartedAt >= WIFI_CONNECT_TIMEOUT_MS) {
+    String failedSsid = pendingWifiSsid;
+    pendingWifiSsid = "";
+    pendingWifiPassword = "";
+    wifiConnectPending = false;
+    wifiConnectionMessage = "Connection to " + failedSsid + " failed. Check the password or signal and try again.";
+    Serial.println(wifiConnectionMessage);
+    if (configuredWifiSsid.length() > 0) {
+      WiFi.disconnect(false, false);
+      if (configuredWifiPassword.length() == 0) WiFi.begin(configuredWifiSsid.c_str());
+      else WiFi.begin(configuredWifiSsid.c_str(), configuredWifiPassword.c_str());
+      stationConnectStartedAt = now;
+      savedNetworkFailureReported = false;
+      lastWifiRetryAt = now;
+    }
+  } else if (!wifiConnectPending && configuredWifiSsid.length() > 0 &&
+             now - lastWifiRetryAt >= WIFI_RETRY_INTERVAL_MS) {
+    WiFi.reconnect();
+    lastWifiRetryAt = now;
+  }
+  if (!wifiConnectPending && !connected && !savedNetworkFailureReported &&
+      configuredWifiSsid.length() > 0 && now - stationConnectStartedAt >= WIFI_CONNECT_TIMEOUT_MS) {
+    wifiConnectionMessage = "Saved network is unavailable. NIMO is retrying; choose another network below if needed.";
+    savedNetworkFailureReported = true;
+  }
+}
+
 // ==================================================
 // SETUP
 // ==================================================
@@ -1779,12 +2499,16 @@ void setup() {
   display.clearDisplay();
 
   settings.begin("deskbuddy", false);
+  configuredWifiSsid = settings.getString("wifi_ssid", String(WIFI_SSID));
+  configuredWifiPassword = settings.getString("wifi_password", String(WIFI_PASSWORD));
   clockStyle = constrain(settings.getInt("clock", 0), 0, 5);
   weatherStyle = constrain(settings.getInt("weather", 0), 0, 5);
   selectedAnimation = constrain(settings.getInt("animation", 0), 0, 15);
   animationSceneIndex = selectedAnimation;
   setFaceExpression(constrain(settings.getInt("expression", 1), 0, FACE_EXPRESSION_COUNT - 1));
   currentMode = MODE_AUTO;
+  setenv("TZ", TIMEZONE, 1);
+  tzset();
 
   leftEye.init(28, 18, 32, 32);
   rightEye.init(80, 18, 32, 32);
@@ -1792,48 +2516,54 @@ void setup() {
 
   playBootAnimation();
 
-  display.clearDisplay();
-  drawWifiAnimation(display, 0);
-  display.display();
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  unsigned long wifiStart = millis();
-  uint8_t wifiFrame = 1;
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart < 15000)) {
-    display.clearDisplay();
-    drawWifiAnimation(display, wifiFrame++);
-    display.display();
-    delay(33);
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Wi-Fi connected; IP: ");
-    Serial.println(WiFi.localIP());
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(true);
+  IPAddress setupIP(192, 168, 1, 4);
+  IPAddress gateway(192, 168, 1, 4);
+  IPAddress subnet(255, 255, 255, 0);
+  bool addressConfigured = WiFi.softAPConfig(setupIP, gateway, subnet);
+  accessPointMode = addressConfigured &&
+    WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASSWORD);
+  if (accessPointMode) {
+    wifiConnectionMessage = "Setup Wi-Fi is ready. Scan for your home network.";
+    Serial.print("Setup Wi-Fi SSID: ");
+    Serial.println(SETUP_AP_SSID);
+    Serial.print("Setup Wi-Fi IP: ");
+    Serial.println(WiFi.softAPIP());
+    showNetworkAddress("NIMO SETUP WI-FI", WiFi.softAPIP(), SETUP_AP_PASSWORD);
+  } else {
+    wifiConnectionMessage = "Could not start setup Wi-Fi. Check the AP settings.";
+    Serial.println("ERROR: Could not start setup Wi-Fi access point.");
     display.clearDisplay();
     display.setFont(NULL);
-    const char* wifiLabel = "WiFi";
-    const char* connectedLabel = "Connected";
-    int16_t textX, textY;
-    uint16_t textWidth, textHeight;
-    display.getTextBounds(wifiLabel, 0, 0, &textX, &textY, &textWidth, &textHeight);
-    display.setCursor((SCREEN_WIDTH - textWidth) / 2, 25);
-    display.print(wifiLabel);
-    display.getTextBounds(connectedLabel, 0, 0, &textX, &textY, &textWidth, &textHeight);
-    display.setCursor((SCREEN_WIDTH - textWidth) / 2, 43);
-    display.print(connectedLabel);
+    display.setCursor(8, 24);
+    display.print("Setup Wi-Fi failed");
+    display.setCursor(8, 39);
+    display.print("Check AP settings");
     display.display();
-    delay(1000);
-    configTime(0, 0, "pool.ntp.org");
-    setenv("TZ", TIMEZONE, 1); tzset();
-    getWeatherAndForecast();
-    lastWeatherUpdate = millis();
+  }
+
+  if (configuredWifiSsid.length() > 0) {
+    wifiConnectionMessage = "Connecting to saved network " + configuredWifiSsid + "…";
+    if (configuredWifiPassword.length() == 0) WiFi.begin(configuredWifiSsid.c_str());
+    else WiFi.begin(configuredWifiSsid.c_str(), configuredWifiPassword.c_str());
+    stationConnectStartedAt = millis();
+    lastWifiRetryAt = millis();
   } else {
-    Serial.printf("Wi-Fi connection failed (status=%d)\n", static_cast<int>(WiFi.status()));
-    display.clearDisplay(); display.setCursor(15, 30); display.print("WiFi Failed!"); display.display(); delay(2000);
+    wifiConnectionMessage = "No saved Wi-Fi network. Scan and choose one below.";
+  }
+  startControlServer();
+  if (accessPointMode) {
+    Serial.print("Open the control panel at http://");
+    Serial.println(WiFi.softAPIP());
+    showNetworkAddress("NIMO SETUP WI-FI", WiFi.softAPIP(), SETUP_AP_PASSWORD);
+    networkInfoUntil = millis() + 5000;
   }
 
   rawPinState = false;
   lastPinState = false;
   pendingTap = false;
+  doubleTapCandidate = false;
   buttonArmed = false;
   buttonReleaseStart = 0;
   buttonReadyAt = millis() + 1200;
@@ -1844,6 +2574,8 @@ void setup() {
 // LOOP
 // ==================================================
 void loop() {
+  updateWifiConnection();
+  controlServer.handleClient();
   handleButton();
 
   if (petMoodEnd != 0 && millis() > petMoodEnd) {
@@ -1858,7 +2590,12 @@ void loop() {
 
   display.clearDisplay();
 
-  if (menuOpen) {
+  if (millis() < networkInfoUntil) {
+    const bool stationConnected = WiFi.status() == WL_CONNECTED;
+    IPAddress panelIP = stationConnected ? WiFi.localIP() : WiFi.softAPIP();
+    showNetworkAddress(stationConnected ? "HOME WI-FI CONNECTED" : "NIMO SETUP WI-FI",
+                       panelIP, stationConnected ? nullptr : SETUP_AP_PASSWORD);
+  } else if (menuOpen) {
     drawMenu();
   } else {
     switch (currentMode) {
