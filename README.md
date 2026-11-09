@@ -8,7 +8,7 @@ screens, a stopwatch/countdown timer, and a small button-controlled game.
 
 - ESP32-C3 Super Mini
 - 128x64 SSD1306 I2C OLED (typically address `0x3C`)
-- Momentary pushbutton
+- Digital-output touch sensor module (for example, TTP223)
 - Optional battery and charging circuit
 
 ### Wiring
@@ -19,15 +19,24 @@ screens, a stopwatch/countdown timer, and a small button-controlled game.
 | OLED GND | GND |
 | OLED SDA | GPIO 5 |
 | OLED SCL | GPIO 6 |
-| Button terminal 1 | GPIO 7 |
-| Button terminal 2 | GND |
+| Touch sensor OUT | GPIO 7 |
+| Touch sensor VCC | 3V3 |
+| Touch sensor GND | GND |
 
-The button uses the ESP32's internal pull-up. GPIO 5 and GPIO 6 are selected
-for I2C to avoid the Super Mini's boot button (GPIO 9) and onboard LED (usually
-GPIO 8). If your board revision labels pins differently, use the GPIO numbers
-printed in its pinout and update `SDA_PIN`, `SCL_PIN`, or `BUTTON_PIN` near the
-top of [Main/Main.ino](Main/Main.ino) to match your wiring. Power the OLED from
-3.3 V unless its manufacturer explicitly supports another supply voltage.
+The firmware expects the sensor's digital output to go HIGH when touched. For
+an active-low sensor, change `TOUCH_ACTIVE_LEVEL` near the top of
+[Main/Main.ino](Main/Main.ino) to `LOW`. GPIO 5 and GPIO 6 are selected for I2C
+to avoid the Super Mini's boot button (GPIO 9) and onboard LED (usually GPIO 8).
+If your board revision labels pins differently, use the GPIO numbers printed
+in its pinout and update `SDA_PIN`, `SCL_PIN`, or `BUTTON_PIN` near the top of
+[Main/Main.ino](Main/Main.ino) to match your wiring. Power the OLED from 3.3 V
+unless its manufacturer explicitly supports another supply voltage.
+
+The firmware requires the touch output to stay active for 150 ms before
+accepting a press, which filters brief proximity-triggered pulses. If the
+sensor output stays active while a finger is only nearby, reduce the sensor's
+sensitivity or adjust its sensing pad according to the module's documentation;
+software cannot distinguish that sustained signal from an actual touch.
 
 ## Arduino IDE setup
 

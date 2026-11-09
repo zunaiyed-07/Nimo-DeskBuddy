@@ -121,7 +121,8 @@ unsigned long pressStartTime = 0;
 bool isLongPressHandled = false;
 const unsigned long LONG_PRESS_TIME = 1000;
 const unsigned long DOUBLE_TAP_DELAY = 400;
-const unsigned long BUTTON_DEBOUNCE_TIME = 40;
+const unsigned long TOUCH_PRESS_DEBOUNCE_TIME = 150;
+const unsigned long TOUCH_RELEASE_DEBOUNCE_TIME = 50;
 
 enum DeskMode {
   MODE_CLOCK_FACES,
@@ -550,7 +551,7 @@ void handleButton() {
   if (!buttonArmed) {
     if (!reading) {
       if (buttonReleaseStart == 0) buttonReleaseStart = now;
-      if (now - buttonReleaseStart >= BUTTON_DEBOUNCE_TIME) {
+      if (now - buttonReleaseStart >= TOUCH_RELEASE_DEBOUNCE_TIME) {
         buttonArmed = true;
         rawPinState = false;
         lastPinState = false;
@@ -567,7 +568,10 @@ void handleButton() {
     rawPinState = reading;
     lastPinChange = now;
   }
-  if (now - lastPinChange < BUTTON_DEBOUNCE_TIME) return;
+  unsigned long debounceTime = rawPinState
+    ? TOUCH_PRESS_DEBOUNCE_TIME
+    : TOUCH_RELEASE_DEBOUNCE_TIME;
+  if (now - lastPinChange < debounceTime) return;
 
   bool currentPinState = rawPinState;
   if (currentPinState != lastPinState) {
