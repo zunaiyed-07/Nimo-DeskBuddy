@@ -27,7 +27,7 @@ const char* SETUP_AP_SSID = "NIMO";
 const char* SETUP_AP_PASSWORD = "nimo-setup-24";
 const unsigned long WIFI_RETRY_INTERVAL_MS = 15000;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
-const int ANIMATION_SCENE_COUNT = 24;
+const int ANIMATION_SCENE_COUNT = 22;
 
 // ==================================================
 // HARDWARE CONFIGURATION
@@ -40,8 +40,6 @@ const int ANIMATION_SCENE_COUNT = 24;
 #define TOUCH_ACTIVE_LEVEL HIGH
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-void drawGirlWithFlower(Adafruit_SSD1306& target);
-void drawBoyAndBird(Adafruit_SSD1306& target);
 bool buttonArmed = false;
 unsigned long buttonReadyAt = 0;
 unsigned long buttonReleaseStart = 0;
@@ -147,7 +145,6 @@ int menuDepth = 0;
 int selectedMenuOption = 0;
 int clockStyle = 0;
 int weatherStyle = 0;
-int animationVariant = 0;
 int selectedAnimation = 0;
 int selectedExpression = 1;
 bool pendingTap = false;
@@ -251,7 +248,6 @@ int expressionMoodForIndex(int index) {
 void setFaceExpression(int index) {
   selectedExpression = constrain(index, 0, FACE_EXPRESSION_COUNT - 1);
   currentMood = expressionMoodForIndex(selectedExpression);
-  animationVariant = selectedExpression % 6;
   petMoodEnd = 0;
 }
 
@@ -304,6 +300,9 @@ struct Eye {
 Eye leftEye, rightEye;
 unsigned long lastSaccade = 0;
 unsigned long saccadeInterval = 3000;
+unsigned long blinkStartedAt = 0;
+bool faceBlinking = false;
+float blinkAmount = 0;
 float breathVal = 0;
 
 // ==================================================
@@ -759,7 +758,7 @@ select:hover,input:hover{border-color:#b8bbcb}
 <div class="card"><h2>Restart device</h2><p>Restart NIMO and reconnect to its dashboard after it comes back online.</p><button class="btn danger" id="reboot">Restart NIMO</button><div class="msg" id="deviceMsg"></div></div></section></main>
 <script>
 const $=id=>document.getElementById(id);
-const choices={clock:['Big 12-hour','Big 24-hour','Split digital','Seconds bar','World clock','Minimal 12-hour'],weather:['Current weather','Weather summary','3-day forecast','Conditions card','Feels-like face','Icon weather'],animation:['Snow','Rain','Clouds','Bubbles','Stars','Hearts','Fireflies','Aurora','Falling leaves','Comets','Fireworks','Spiral','Tunnel','DNA','Girl & flower','Boy & bird'],expression:['Happy','Love','Surprised','Sleepy','Angry','Sad','Excited','Suspicious','Dizzy','Neutral','Wink','Crying','Laughing','Confused','Bored','Cool','Shy','Starstruck','Scared','Grumpy','Embarrassed','Sneezing']};
+const choices={clock:['Big 12-hour','Big 24-hour','Split digital','Seconds bar','World clock','Minimal 12-hour'],weather:['Current weather','Weather summary','3-day forecast','Conditions card','Feels-like face','Icon weather'],animation:['Snow','Rain','Clouds','Bubbles','Stars','Hearts','Fireflies','Aurora','Falling leaves','Comets','Fireworks','Spiral','Tunnel','DNA'],expression:['Happy','Love','Surprised','Sleepy','Angry','Sad','Excited','Suspicious','Dizzy','Neutral','Wink','Crying','Laughing','Confused','Bored','Cool','Shy','Starstruck','Scared','Grumpy','Embarrassed','Sneezing']};
 choices.animation.push('Orbiting stars','Comet shower','Petal breeze','Heartbeat','Ripple rings','Twinkle field','Orbiting planet','Confetti');
 choices.expression.push('Curious','Proud','Nervous','Silly','Focused','Grateful','Playful','Shocked');
 const selected={clock:0,weather:0,animation:0,expression:1};
@@ -1222,6 +1221,8 @@ void startControlServer() {
 // ==================================================
 // DRAW FUNCTIONS
 // ==================================================
+void drawBlinkMask(int ix, int iy, int iw, int ih);
+
 void drawDizzyEye(bool isLeft) {
   Eye& e = isLeft ? leftEye : rightEye;
   int ix = (int)e.x, iy = (int)e.y, iw = (int)e.w, ih = (int)e.h;
@@ -1241,290 +1242,409 @@ void drawDizzyEye(bool isLeft) {
   int pupilY2 = cy - sin(angle) * radius;
   display.fillCircle(pupilX2, pupilY2, 3, SSD1306_BLACK);
 
+  drawBlinkMask(ix, iy, iw, ih);
   int starOffset = (now / 80) % 4;
   display.drawBitmap(6 - starOffset, 0, bmp_dizzy_stars, 16, 16, SSD1306_WHITE);
   display.drawBitmap(106 + starOffset, 0, bmp_dizzy_stars, 16, 16, SSD1306_WHITE);
+}
+
+void drawBlinkMask(int ix, int iy, int iw, int ih) {
+  if (blinkAmount <= 0) return;
+  const int covered = constrain((int)(ih * blinkAmount + 0.5f), 0, ih);
+  if (covered >= ih) {
+    display.fillRoundRect(ix, iy, iw, ih, min(9, ih / 2), SSD1306_BLACK);
+    return;
+  }
+  const int topCover = (covered * 9 + 9) / 10;
+  const int bottomCover = covered - topCover;
+  if (topCover > 0)
+    display.fillRoundRect(ix, iy, iw, topCover, min(iw, topCover) / 2, SSD1306_BLACK);
+  if (bottomCover > 0)
+    display.fillRoundRect(ix, iy + ih - bottomCover, iw, bottomCover,
+                          min(iw, bottomCover) / 2, SSD1306_BLACK);
+}
+
+void drawHeartEye(int cx, int cy, int size) {
+  const int radius = max(2, size / 2);
+  display.fillCircle(cx - radius, cy - radius / 2, radius, SSD1306_WHITE);
+  display.fillCircle(cx + radius, cy - radius / 2, radius, SSD1306_WHITE);
+  display.fillTriangle(cx - size, cy - radius / 3,
+                       cx + size, cy - radius / 3,
+                       cx, cy + size, SSD1306_WHITE);
 }
 
 void drawAngryEye(bool isLeft) {
   Eye& e = isLeft ? leftEye : rightEye;
   int ix = (int)e.x, iy = (int)e.y, iw = (int)e.w, ih = (int)e.h;
 
-  display.fillRoundRect(ix, iy, iw, ih, 8, SSD1306_WHITE);
+  display.fillRoundRect(ix, iy, iw, ih, min(8, ih / 2), SSD1306_WHITE);
   int cx = ix + iw / 2, cy = iy + ih / 2;
-  int pupilSize = iw / 2.5;
-  int px = cx - 2, py = cy;
-  display.fillRoundRect(px - pupilSize/2, py - pupilSize/2, pupilSize, pupilSize, pupilSize/2, SSD1306_BLACK);
+  const int pupilW = max(8, iw / 3);
+  const int pupilH = max(9, ih / 2);
+  const int px = constrain(cx + (int)e.pupilX - pupilW / 2, ix + 2, ix + iw - pupilW - 2);
+  const int py = constrain(cy + (int)e.pupilY - pupilH / 2, iy + 2, iy + ih - pupilH - 2);
+  display.fillRoundRect(px, py, pupilW, pupilH, min(pupilW, pupilH) / 2, SSD1306_BLACK);
+  display.drawPixel(px + pupilW - 3, py + 3, SSD1306_WHITE);
 
+  const int slant = max(6, ih / 3 + (int)(2.0f * sin(millis() / 170.0f)));
   if (isLeft) {
-    for (int i = 0; i < 8; i++) display.drawLine(ix-2, iy-2+i, ix+iw+2, iy+6+i, SSD1306_BLACK);
+    display.fillTriangle(ix - 1, iy - 1, ix + iw + 1, iy - 1,
+                         ix + iw + 1, iy + slant, SSD1306_BLACK);
     display.drawBitmap(ix - 12, iy - 6, bmp_angry_mark, 16, 16, SSD1306_WHITE);
   } else {
-    for (int i = 0; i < 8; i++) display.drawLine(ix-2, iy+6+i, ix+iw+2, iy-2+i, SSD1306_BLACK);
+    display.fillTriangle(ix - 1, iy - 1, ix + iw + 1, iy - 1,
+                         ix - 1, iy + slant, SSD1306_BLACK);
     display.drawBitmap(ix + iw - 4, iy - 6, bmp_angry_mark, 16, 16, SSD1306_WHITE);
   }
-  for (int i = 0; i < 3; i++) display.drawLine(ix+2+i*4, iy+ih-2, ix+6+i*4, iy+ih-6, SSD1306_WHITE);
+  drawBlinkMask(ix, iy, iw, ih);
+}
+
+void drawClosedEye(int ix, int cy, int width, int curve) {
+  const int halfWidth = max(1, width / 2);
+  int previousX = ix;
+  int previousY = cy + curve;
+  for (int x = 1; x <= width; x++) {
+    const int offset = x - halfWidth;
+    const int y = cy + curve - (curve * offset * offset) / (halfWidth * halfWidth);
+    const int nextX = ix + x;
+    display.drawLine(previousX, previousY, nextX, y, SSD1306_WHITE);
+    display.drawLine(previousX, previousY + 1, nextX, y + 1, SSD1306_WHITE);
+    previousX = nextX;
+    previousY = y;
+  }
 }
 
 void drawNormalEye(bool isLeft) {
   Eye& e = isLeft ? leftEye : rightEye;
-  int ix = (int)e.x, iy = (int)e.y, iw = (int)e.w, ih = (int)e.h;
-  int r = (iw < 20) ? 3 : 8;
-  int cx = ix + iw / 2, cy = iy + ih / 2;
+  const int ix = (int)e.x, iy = (int)e.y, iw = max(8, (int)e.w), ih = max(8, (int)e.h);
+  const int cx = ix + iw / 2, cy = iy + ih / 2;
 
-  if ((currentMood == MOOD_WINK && isLeft) ||
-      (currentMood == MOOD_SILLY && !isLeft) ||
-      currentMood == MOOD_LAUGHING ||
-      currentMood == MOOD_GRATEFUL ||
-      currentMood == MOOD_SNEEZING) {
-    int direction = currentMood == MOOD_SNEEZING ? -1 : 1;
-    int previousX = ix + 3;
-    int previousY = cy + direction * 3;
-    for (int step = 1; step <= 6; step++) {
-      int nextX = ix + 3 + step * (iw - 6) / 6;
-      int nextY = cy + direction * (3 - abs(3 - step));
-      display.drawLine(previousX, previousY, nextX, nextY, SSD1306_WHITE);
-      previousX = nextX;
-      previousY = nextY;
-    }
+  if (currentMood == MOOD_LOVE) {
+    const int heartSize = 12 + (int)(2.0f * sin(millis() / 220.0f));
+    drawHeartEye(cx + (int)(e.pupilX * 0.25f), cy + (int)(e.pupilY * 0.25f), heartSize);
+    drawBlinkMask(ix, iy, iw, ih);
     return;
   }
 
-  if (animationVariant == 1) {
-    display.fillCircle(cx, cy, min(iw, ih) / 2, SSD1306_WHITE);
-  } else if (animationVariant == 2) {
-    display.fillRect(ix, iy, iw, ih, SSD1306_WHITE);
-  } else {
-    int eyeRadius = animationVariant == 3 ? ih / 2 : r;
-    display.fillRoundRect(ix, iy, iw, ih, eyeRadius, SSD1306_WHITE);
-  }
-
-  if (animationVariant == 5 && isLeft && (millis() % 6000) < 180) {
-    display.drawLine(ix + 2, cy, ix + iw - 2, cy, SSD1306_BLACK);
+  const bool closed =
+    (currentMood == MOOD_WINK && isLeft) ||
+    (currentMood == MOOD_SILLY && !isLeft) ||
+    currentMood == MOOD_LAUGHING || currentMood == MOOD_GRATEFUL ||
+    currentMood == MOOD_SNEEZING;
+  if (closed) {
+    drawClosedEye(ix + 2, cy, iw - 4, currentMood == MOOD_SNEEZING ? -3 : 3);
+    drawBlinkMask(ix, iy, iw, ih);
     return;
   }
 
-  int pw = animationVariant == 4 ? iw / 3 : iw / 2.2;
-  int ph = animationVariant == 4 ? ih / 3 : ih / 2.2;
-  if (currentMood == MOOD_SCARED || currentMood == MOOD_NERVOUS) {
-    pw = max(5, iw / 4);
-    ph = max(5, ih / 4);
-  }
+  const int radius = min(9, ih / 2);
+  display.fillRoundRect(ix, iy, iw, ih, radius, SSD1306_WHITE);
+
+  int pupilW = max(7, iw / 3);
+  int pupilH = max(8, ih / 2);
   if (currentMood == MOOD_CURIOUS || currentMood == MOOD_SHOCKED) {
-    pw = max(7, iw / 2);
-    ph = max(7, ih / 2);
+    pupilW = max(9, iw / 2);
+    pupilH = max(10, ih / 2 + 2);
+  } else if (currentMood == MOOD_SCARED || currentMood == MOOD_NERVOUS) {
+    pupilW = max(6, iw / 4);
+    pupilH = max(7, ih / 3);
+  } else if (currentMood == MOOD_SUSPICIOUS || currentMood == MOOD_BORED ||
+             currentMood == MOOD_GRUMPY || currentMood == MOOD_FOCUSED ||
+             currentMood == MOOD_SLEEPY) {
+    pupilH = max(5, ih / 3);
   }
-  if (currentMood == MOOD_FOCUSED) {
-    ph = max(5, ih / 3);
-  }
-  if (animationVariant == 5) ph = max(4, ih / 4);
-  int px = cx + (int)e.pupilX - pw / 2;
-  int py = cy + (int)e.pupilY - ph / 2;
-  if (px < ix) px = ix;
-  if (px + pw > ix + iw) px = ix + iw - pw;
-  if (py < iy) py = iy;
-  if (py + ph > iy + ih) py = iy + ih - ph;
-  display.fillRoundRect(px, py, pw, ph, r / 2, SSD1306_BLACK);
-  if (iw > 15 && ih > 15) {
-    display.fillCircle(px + pw - 4, py + 4, 2, SSD1306_WHITE);
-    display.drawPixel(px + pw - 1, py + 7, SSD1306_WHITE);
+  const int pupilX = constrain(cx + (int)e.pupilX - pupilW / 2,
+                               ix + 2, ix + iw - pupilW - 2);
+  const int pupilY = constrain(cy + (int)e.pupilY - pupilH / 2,
+                               iy + 2, iy + ih - pupilH - 2);
+  display.fillRoundRect(pupilX, pupilY, pupilW, pupilH,
+                        min(pupilW, pupilH) / 2, SSD1306_BLACK);
+  if (pupilW >= 8 && pupilH >= 8) {
+    display.fillCircle(pupilX + pupilW - 3, pupilY + 3, 1, SSD1306_WHITE);
+    if (pupilH > 11) display.drawPixel(pupilX + pupilW - 2, pupilY + 5, SSD1306_WHITE);
   }
 
-  if (animationVariant == 3) {
-    int browY = iy - 2;
-    display.drawLine(ix + 2, browY, cx - 2, browY - 2, SSD1306_WHITE);
-    display.drawLine(cx + 2, browY - 2, ix + iw - 2, browY, SSD1306_WHITE);
-  } else if (animationVariant == 4) {
-    int sparkleX = isLeft ? ix + 5 : ix + iw - 5;
-    display.drawPixel(sparkleX, iy + 4, SSD1306_WHITE);
-    display.drawPixel(sparkleX + (isLeft ? 1 : -1), iy + 5, SSD1306_WHITE);
-  }
   if (currentMood == MOOD_SUSPICIOUS) {
-    int browY = iy - 2;
-    display.drawLine(ix + 3, browY, ix + iw - 3, browY + (isLeft ? -3 : 1), SSD1306_WHITE);
+    display.drawLine(ix + 3, iy - 2, ix + iw - 3, iy - 2 + (isLeft ? -3 : 1), SSD1306_WHITE);
   } else if (currentMood == MOOD_CONFUSED) {
-    int browY = iy - 3;
-    display.drawLine(ix + 2, browY + (isLeft ? 2 : 0), cx, browY - 2, SSD1306_WHITE);
-    display.drawLine(cx, browY - 2, ix + iw - 2, browY + (isLeft ? 0 : 2), SSD1306_WHITE);
+    display.drawLine(ix + 2, iy - 3 + (isLeft ? 2 : 0), cx, iy - 5, SSD1306_WHITE);
+    display.drawLine(cx, iy - 5, ix + iw - 2, iy - 3 + (isLeft ? 0 : 2), SSD1306_WHITE);
   } else if (currentMood == MOOD_CURIOUS) {
-    int browY = iy - 2;
-    display.drawLine(ix + 3, browY + (isLeft ? 0 : 3),
-                     ix + iw - 3, browY + (isLeft ? 3 : 0), SSD1306_WHITE);
-  } else if (currentMood == MOOD_FOCUSED || currentMood == MOOD_PROUD) {
-    int browY = iy - 1;
-    display.drawLine(ix + 2, browY + (currentMood == MOOD_FOCUSED ? 3 : 1),
-                     ix + iw - 2, browY, SSD1306_WHITE);
+    display.drawLine(ix + 3, iy - 2 + (isLeft ? 0 : 3),
+                     ix + iw - 3, iy - 2 + (isLeft ? 3 : 0), SSD1306_WHITE);
+  } else if (currentMood == MOOD_FOCUSED || currentMood == MOOD_PROUD ||
+             currentMood == MOOD_ANGRY || currentMood == MOOD_GRUMPY) {
+    const int browDrop = currentMood == MOOD_FOCUSED ? 3 : 1;
+    display.drawLine(ix + 2, iy - 2 + browDrop, cx, iy - 4, SSD1306_WHITE);
+    display.drawLine(cx, iy - 4, ix + iw - 2, iy - 2, SSD1306_WHITE);
   } else if (currentMood == MOOD_NERVOUS) {
     display.drawLine(ix + 3, iy - 1, cx, iy - 4, SSD1306_WHITE);
     display.drawLine(cx, iy - 4, ix + iw - 3, iy - 1, SSD1306_WHITE);
+  } else if (currentMood == MOOD_SCARED || currentMood == MOOD_SHOCKED) {
+    display.drawLine(ix + 4, iy - 3, ix + iw - 4, iy - 3, SSD1306_WHITE);
   }
 
   if (currentMood == MOOD_HAPPY || currentMood == MOOD_EXCITED ||
-      currentMood == MOOD_LOVE || currentMood == MOOD_LAUGHING)
-    display.fillRect(ix, iy + ih - 10, iw, 12, SSD1306_BLACK);
-  else if (currentMood == MOOD_SLEEPY || currentMood == MOOD_FOCUSED)
-    display.fillRect(ix, iy, iw, ih / 2, SSD1306_BLACK);
-  else if (currentMood == MOOD_BORED || currentMood == MOOD_GRUMPY)
-    display.fillRect(ix, iy, iw, currentMood == MOOD_GRUMPY ? ih / 2 : ih / 3, SSD1306_BLACK);
-  else if (currentMood == MOOD_SAD) {
+      currentMood == MOOD_PLAYFUL || currentMood == MOOD_STARSTRUCK) {
+    display.drawLine(ix + 3, iy + ih - 4, cx, iy + ih - 1, SSD1306_BLACK);
+    display.drawLine(cx, iy + ih - 1, ix + iw - 3, iy + ih - 4, SSD1306_BLACK);
+  } else if (currentMood == MOOD_SLEEPY || currentMood == MOOD_BORED ||
+             currentMood == MOOD_FOCUSED) {
+    const float sway = currentMood == MOOD_SLEEPY
+      ? 0.5f + 0.5f * sin(millis() / 520.0f) : 0.0f;
+    const int droop = currentMood == MOOD_SLEEPY
+      ? (int)(ih * (0.25f + 0.12f * sway))
+      : (currentMood == MOOD_FOCUSED ? ih / 5 : ih / 6);
+    display.fillRect(ix, iy, iw, droop, SSD1306_BLACK);
+    display.drawLine(ix + 2, iy + droop, cx, iy + droop + 2, SSD1306_WHITE);
+    display.drawLine(cx, iy + droop + 2, ix + iw - 2, iy + droop, SSD1306_WHITE);
+  } else if (currentMood == MOOD_GRUMPY) {
+    display.fillRect(ix, iy, iw, ih / 4, SSD1306_BLACK);
+  } else if (currentMood == MOOD_SAD || currentMood == MOOD_CRYING) {
+    const int slant = max(5, ih / 3 + (int)(2.0f * sin(millis() / 420.0f)));
     if (isLeft)
-      for (int i = 0; i < 8; i++) display.drawLine(ix, iy+i, ix+iw, iy+4+i, SSD1306_BLACK);
+      display.fillTriangle(ix - 1, iy - 1, ix + iw + 1, iy - 1,
+                           ix - 1, iy + slant, SSD1306_BLACK);
     else
-      for (int i = 0; i < 8; i++) display.drawLine(ix, iy+4+i, ix+iw, iy+i, SSD1306_BLACK);
+      display.fillTriangle(ix - 1, iy - 1, ix + iw + 1, iy - 1,
+                           ix + iw + 1, iy + slant, SSD1306_BLACK);
   }
 
   if (currentMood == MOOD_STARSTRUCK || currentMood == MOOD_PLAYFUL) {
-    display.drawLine(px + pw / 2, py + 2, px + pw / 2, py + ph - 2, SSD1306_WHITE);
-    display.drawLine(px + 2, py + ph / 2, px + pw - 2, py + ph / 2, SSD1306_WHITE);
+    const int sparkleX = isLeft ? ix + 6 : ix + iw - 6;
+    display.drawLine(sparkleX - 2, cy, sparkleX + 2, cy, SSD1306_WHITE);
+    display.drawLine(sparkleX, cy - 2, sparkleX, cy + 2, SSD1306_WHITE);
   }
+
+  drawBlinkMask(ix, iy, iw, ih);
+}
+
+void drawMouthCurve(int cx, int cy, int halfWidth, int curve, int thickness = 2) {
+  const int widthSquared = halfWidth * halfWidth;
+  int previousX = cx - halfWidth;
+  int previousY = cy + curve;
+  for (int x = -halfWidth + 1; x <= halfWidth; x++) {
+    const int y = cy + (curve * x * x) / widthSquared;
+    for (int line = 0; line < thickness; line++)
+      display.drawLine(previousX, previousY + line, cx + x, y + line, SSD1306_WHITE);
+    previousX = cx + x;
+    previousY = y;
+  }
+}
+
+void drawOpenMouth(int cx, int cy, int width, int height, bool tongue = false) {
+  const int radius = min(width, height) / 2;
+  display.fillRoundRect(cx - width / 2, cy - height / 2, width, height, radius, SSD1306_WHITE);
+  if (width > 5 && height > 5)
+    display.fillRoundRect(cx - width / 2 + 2, cy - height / 2 + 2,
+                          width - 4, height - 4, max(1, radius - 2), SSD1306_BLACK);
+  if (tongue && width > 8 && height > 7)
+    display.fillRoundRect(cx + 1, cy + height / 2 - 5, width / 3, 4, 2, SSD1306_WHITE);
 }
 
 void drawMouth() {
   const int mx = 64;
   const int midY = 54;
+  const float pulse = sin(millis() / 190.0f);
   switch (currentMood) {
     case MOOD_HAPPY:
+      drawMouthCurve(mx, midY, 10, 4);
+      break;
     case MOOD_LOVE:
+      drawMouthCurve(mx, midY, 8, 3);
+      break;
     case MOOD_WINK:
+      drawMouthCurve(mx + 2, midY, 8, 4);
+      break;
     case MOOD_SHY:
+      drawMouthCurve(mx, midY, 7, 2);
+      break;
     case MOOD_EMBARRASSED:
+      drawMouthCurve(mx, midY + 1, 6, 1);
+      display.drawPixel(mx - 7, midY + 2, SSD1306_WHITE);
+      display.drawPixel(mx + 7, midY + 2, SSD1306_WHITE);
+      break;
     case MOOD_PROUD:
+      drawMouthCurve(mx + 1, midY, 8, 3);
+      display.drawPixel(mx + 9, midY, SSD1306_WHITE);
+      break;
     case MOOD_GRATEFUL:
+      drawMouthCurve(mx, midY, 8, 3);
+      break;
     case MOOD_PLAYFUL:
-      for (int thickness = 0; thickness < 2; thickness++) {
-        int previousX = mx - 10;
-        int previousY = midY + 4 + thickness;
-        for (int x = -9; x <= 10; x++) {
-          int y = midY + 4 + (x * x) / 40 + thickness;
-          display.drawLine(previousX, previousY, mx + x, y, SSD1306_WHITE);
-          previousX = mx + x;
-          previousY = y;
-        }
-      }
+      drawMouthCurve(mx, midY - 1, 8, 3);
+      display.fillRoundRect(mx + 1, midY + 2, 5, 4, 2, SSD1306_WHITE);
       break;
-
     case MOOD_EXCITED:
+      drawOpenMouth(mx, midY, 17, 12 + (int)(2.0f * pulse));
+      display.drawLine(mx - 5, midY - 3, mx + 5, midY - 3, SSD1306_WHITE);
+      break;
     case MOOD_LAUGHING:
+      drawOpenMouth(mx, midY, 19, 13 + (int)(2.0f * pulse));
+      display.drawLine(mx - 6, midY - 3, mx + 6, midY - 3, SSD1306_WHITE);
+      break;
     case MOOD_SILLY:
-      display.fillRoundRect(mx - 7, midY - 5, 14, 11, 5, SSD1306_WHITE);
-      display.fillRoundRect(mx - 4, midY - 2, 8, 5, 3, SSD1306_BLACK);
-      if (currentMood == MOOD_SILLY) display.fillRoundRect(mx + 1, midY + 1, 4, 3, 2, SSD1306_WHITE);
+      drawOpenMouth(mx, midY, 13, 11, true);
       break;
-
     case MOOD_SAD:
+      drawMouthCurve(mx, midY, 9, -4);
+      break;
     case MOOD_CRYING:
-      for (int thickness = 0; thickness < 2; thickness++) {
-        int previousX = mx - 9;
-        int previousY = midY + 1 - thickness;
-        for (int x = -8; x <= 9; x++) {
-          int y = midY + 1 - (x * x) / 35 - thickness;
-          display.drawLine(previousX, previousY, mx + x, y, SSD1306_WHITE);
-          previousX = mx + x;
-          previousY = y;
-        }
-      }
+      drawMouthCurve(mx, midY, 8, -4);
+      display.drawLine(mx - 4, midY - 1, mx + 4, midY - 1, SSD1306_WHITE);
       break;
-
     case MOOD_SURPRISED:
+      drawOpenMouth(mx, midY, 8, 12);
+      break;
     case MOOD_SCARED:
+      drawOpenMouth(mx, midY, 11, 14);
+      break;
     case MOOD_SHOCKED:
-      display.fillRoundRect(mx - 4, midY - 5, 9, 12, 4, SSD1306_WHITE);
-      display.fillRoundRect(mx - 2, midY - 3, 5, 8, 2, SSD1306_BLACK);
+      drawOpenMouth(mx, midY, 13, 15 + (int)(pulse > 0.6f));
       break;
-
     case MOOD_SLEEPY:
-      display.drawLine(mx - 5, midY, mx + 5, midY, SSD1306_WHITE);
-      display.drawPixel(mx - 4, midY + 1, SSD1306_WHITE);
-      display.drawPixel(mx + 4, midY + 1, SSD1306_WHITE);
+      drawOpenMouth(mx, midY + 1, 8, 4 + (int)(3.0f * (0.5f + 0.5f * pulse)));
       break;
-
-    case MOOD_ANGRY: {
-      const int mouthX[] = {-8, -5, -2, 1, 4, 7};
-      const int mouthY[] = {0, 3, 0, 3, 0, 3};
-      for (int i = 0; i < 5; i++) {
-        display.drawLine(mx + mouthX[i], midY + mouthY[i],
-                         mx + mouthX[i + 1], midY + mouthY[i + 1],
-                         SSD1306_WHITE);
-      }
+    case MOOD_ANGRY:
+      drawMouthCurve(mx, midY, 8, -2, 2);
       break;
-    }
-
     case MOOD_SUSPICIOUS:
+      display.drawLine(mx - 7, midY + 1, mx + 5, midY - 1, SSD1306_WHITE);
+      display.drawLine(mx - 5, midY + 2, mx + 5, midY, SSD1306_WHITE);
+      break;
     case MOOD_COOL:
-      display.drawLine(mx - 6, midY + 1, mx + 6, midY - 1, SSD1306_WHITE);
-      display.drawLine(mx - 4, midY + 2, mx + 4, midY, SSD1306_WHITE);
+      display.drawLine(mx - 7, midY + 1, mx + 7, midY + 1, SSD1306_WHITE);
       break;
-
     case MOOD_DIZZY:
+      display.drawLine(mx - 8, midY, mx - 4, midY + 2, SSD1306_WHITE);
+      display.drawLine(mx - 4, midY + 2, mx, midY - 1, SSD1306_WHITE);
+      display.drawLine(mx, midY - 1, mx + 4, midY + 2, SSD1306_WHITE);
+      display.drawLine(mx + 4, midY + 2, mx + 8, midY, SSD1306_WHITE);
+      break;
     case MOOD_CONFUSED:
-      display.drawLine(mx - 7, midY, mx - 3, midY + 2, SSD1306_WHITE);
-      display.drawLine(mx - 3, midY + 2, mx + 1, midY - 1, SSD1306_WHITE);
-      display.drawLine(mx + 1, midY - 1, mx + 5, midY + 2, SSD1306_WHITE);
+      display.drawCircle(mx + 2, midY, 3, SSD1306_WHITE);
       break;
-
     case MOOD_BORED:
-      display.drawLine(mx - 5, midY + 1, mx + 5, midY + 1, SSD1306_WHITE);
+      display.drawLine(mx - 6, midY + 1, mx + 6, midY + 1, SSD1306_WHITE);
       break;
-
     case MOOD_STARSTRUCK:
-      display.fillCircle(mx, midY, 4, SSD1306_WHITE);
-      display.drawPixel(mx - 1, midY - 1, SSD1306_BLACK);
-      display.drawPixel(mx + 1, midY - 1, SSD1306_BLACK);
+      drawMouthCurve(mx, midY, 8, 3);
+      display.drawPixel(mx - 3, midY + 5, SSD1306_WHITE);
       break;
-
     case MOOD_GRUMPY:
-      display.drawLine(mx - 6, midY - 1, mx, midY + 2, SSD1306_WHITE);
-      display.drawLine(mx, midY + 2, mx + 6, midY - 1, SSD1306_WHITE);
+      drawMouthCurve(mx, midY, 7, -3);
       break;
-
     case MOOD_SNEEZING:
-      display.fillRoundRect(mx - 6, midY - 4, 12, 9, 4, SSD1306_WHITE);
-      display.drawLine(mx - 3, midY, mx + 3, midY, SSD1306_BLACK);
+      drawOpenMouth(mx, midY, 11, 7 + (int)(2.0f * pulse));
       break;
-
     case MOOD_CURIOUS:
-      display.drawCircle(mx, midY + 1, 3, SSD1306_WHITE);
+      display.drawCircle(mx, midY, 3, SSD1306_WHITE);
+      display.drawPixel(mx, midY + 1, SSD1306_WHITE);
       break;
-
     case MOOD_NERVOUS:
-      display.drawLine(mx - 5, midY - 1, mx - 2, midY + 1, SSD1306_WHITE);
-      display.drawLine(mx - 2, midY + 1, mx + 1, midY - 1, SSD1306_WHITE);
-      display.drawLine(mx + 1, midY - 1, mx + 5, midY + 1, SSD1306_WHITE);
+      display.drawLine(mx - 7, midY - 1, mx - 4, midY + 1, SSD1306_WHITE);
+      display.drawLine(mx - 4, midY + 1, mx - 1, midY - 1, SSD1306_WHITE);
+      display.drawLine(mx - 1, midY - 1, mx + 2, midY + 1, SSD1306_WHITE);
+      display.drawLine(mx + 2, midY + 1, mx + 5, midY - 1, SSD1306_WHITE);
       break;
-
     case MOOD_FOCUSED:
       display.drawLine(mx - 6, midY + 1, mx + 6, midY + 1, SSD1306_WHITE);
       break;
-
     case MOOD_NORMAL:
     default:
-      display.drawLine(mx - 5, midY, mx + 5, midY, SSD1306_WHITE);
-      display.drawPixel(mx - 4, midY - 1, SSD1306_WHITE);
-      display.drawPixel(mx + 4, midY - 1, SSD1306_WHITE);
+      drawMouthCurve(mx, midY, 6, 1);
       break;
   }
 }
 
 void updateEyePhysics() {
-  unsigned long now = millis();
-  breathVal = sin(now / 800.0) * 1.5;
+  const unsigned long now = millis();
+  const float time = now / 1000.0f;
+  breathVal = sin(time * 1.25f) * 1.2f;
 
-  const int blinkDelay = 120;
-  const int blinkMin = 2000;
-  const int blinkMax = 6000;
-
-  if (now > leftEye.nextBlinkTime) {
-    leftEye.blinking = rightEye.blinking = true;
-    leftEye.lastBlink = now;
-    leftEye.nextBlinkTime = now + random(blinkMin, blinkMax);
-  }
-  if (leftEye.blinking) {
-    leftEye.targetH = rightEye.targetH = 2;
-    if (now - leftEye.lastBlink > blinkDelay) {
-      leftEye.blinking = rightEye.blinking = false;
-      leftEye.targetH  = rightEye.targetH  = 32;
+  if (now - lastSaccade >= saccadeInterval) {
+    float gazeX = (float)random(-6, 7);
+    float gazeY = (float)random(-4, 5);
+    if (random(0, 5) == 0) gazeX = gazeY = 0;
+    if (currentMood == MOOD_ANGRY) {
+      gazeX *= 0.45f;
+      gazeY *= 0.45f;
+    } else if (currentMood == MOOD_SLEEPY) {
+      gazeY = max(1.0f, gazeY);
+    } else if (currentMood == MOOD_SAD) {
+      gazeY = max(1.0f, gazeY);
+    } else if (currentMood == MOOD_LOVE) {
+      gazeX *= 0.35f;
+      gazeY *= 0.35f;
     }
+    leftEye.targetPupilX = gazeX;
+    rightEye.targetPupilX = gazeX + random(-1, 2);
+    leftEye.targetPupilY = gazeY;
+    rightEye.targetPupilY = gazeY + random(-1, 2);
+    lastSaccade = now;
+    saccadeInterval = random(1200, 3200);
   }
+
+  float height = 31.0f;
+  float width = 32.0f;
+  float centerOffset = breathVal;
+  if (currentMood == MOOD_SURPRISED || currentMood == MOOD_SHOCKED ||
+      currentMood == MOOD_SCARED || currentMood == MOOD_CURIOUS) {
+    height = currentMood == MOOD_SHOCKED ? 34.0f : 33.0f;
+    width = currentMood == MOOD_CURIOUS ? 34.0f : 33.0f;
+    centerOffset -= 1.0f;
+  } else if (currentMood == MOOD_ANGRY) {
+    height = 30.0f;
+    centerOffset += 1.0f;
+  } else if (currentMood == MOOD_SLEEPY) {
+    height = 29.0f + 0.6f * sin(time * 1.6f);
+    centerOffset += 1.0f;
+  } else if (currentMood == MOOD_SAD || currentMood == MOOD_CRYING) {
+    height = 30.0f;
+    centerOffset += 1.0f;
+  } else if (currentMood == MOOD_BORED || currentMood == MOOD_GRUMPY ||
+             currentMood == MOOD_FOCUSED) {
+    height = 28.0f;
+    width = 31.0f;
+    centerOffset += 0.5f;
+  } else if (currentMood == MOOD_EXCITED || currentMood == MOOD_STARSTRUCK) {
+    height = 32.0f + 0.7f * sin(time * 2.0f);
+    width = 33.0f;
+  } else if (currentMood == MOOD_SUSPICIOUS || currentMood == MOOD_COOL) {
+    height = 29.0f;
+    width = 33.0f;
+  } else if (currentMood == MOOD_NERVOUS || currentMood == MOOD_EMBARRASSED) {
+    height = 30.0f;
+    width = 31.0f;
+  }
+  leftEye.targetH = rightEye.targetH = height;
+  leftEye.targetW = rightEye.targetW = width;
+  leftEye.targetX = 44.0f - width / 2.0f;
+  rightEye.targetX = 96.0f - width / 2.0f;
+  const float eyeCenterY = 30.0f + centerOffset;
+  leftEye.targetY = rightEye.targetY = eyeCenterY - height / 2.0f;
+
+  if (!faceBlinking && (long)(now - leftEye.nextBlinkTime) >= 0) {
+    faceBlinking = true;
+    blinkStartedAt = now;
+    leftEye.blinking = rightEye.blinking = true;
+  }
+  if (faceBlinking) {
+    const unsigned long elapsed = now - blinkStartedAt;
+    const float progress = constrain(elapsed / 180.0f, 0.0f, 1.0f);
+    blinkAmount = 0.5f - 0.5f * cos(progress * TWO_PI);
+    if (elapsed >= 180) {
+      faceBlinking = false;
+      blinkAmount = 0;
+      leftEye.blinking = rightEye.blinking = false;
+      leftEye.nextBlinkTime = rightEye.nextBlinkTime = now + random(2200, 5800);
+      if (random(0, 5) == 0)
+        leftEye.nextBlinkTime = rightEye.nextBlinkTime = now + 190;
+    }
+  } else {
+    blinkAmount = 0;
+  }
+
   leftEye.update();
   rightEye.update();
 }
@@ -1551,6 +1671,10 @@ void drawEmoPage() {
   } else if (currentMood == MOOD_CRYING) {
     display.drawBitmap(42, 42, bmp_tiny_drop, 8, 8, SSD1306_WHITE);
     display.drawBitmap(91, 42, bmp_tiny_drop, 8, 8, SSD1306_WHITE);
+  } else if (currentMood == MOOD_SAD) {
+    const int tearY = 42 + (int)((millis() / 110) % 8);
+    display.drawBitmap(42, tearY, bmp_tiny_drop, 8, 8, SSD1306_WHITE);
+    display.drawBitmap(91, tearY, bmp_tiny_drop, 8, 8, SSD1306_WHITE);
   } else if (currentMood == MOOD_SHY || currentMood == MOOD_EMBARRASSED) {
     display.drawLine(28, 48, 37, 46, SSD1306_WHITE);
     display.drawLine(30, 51, 39, 49, SSD1306_WHITE);
@@ -1577,8 +1701,10 @@ void drawEmoPage() {
 
   if (currentMood == MOOD_LOVE)
     display.drawBitmap(56, 0, bmp_heart, 16, 16, SSD1306_WHITE);
-  else if (currentMood == MOOD_SLEEPY)
-    display.drawBitmap(110, 0, bmp_zzz, 16, 16, SSD1306_WHITE);
+  else if (currentMood == MOOD_SLEEPY) {
+    const int drift = (millis() / 180) % 5;
+    display.drawBitmap(108 + drift, 4 - drift, bmp_zzz, 16, 16, SSD1306_WHITE);
+  }
   else if (currentMood == MOOD_NERVOUS) {
     display.drawPixel(58, 12, SSD1306_WHITE);
     display.drawPixel(70, 9, SSD1306_WHITE);
@@ -1601,15 +1727,6 @@ void resetSceneParticles() {
 
 void drawSceneAnimation() {
   const unsigned long now = millis();
-
-  if (animationSceneIndex == 14) {
-    drawGirlWithFlower(display);
-    return;
-  }
-  if (animationSceneIndex == 15) {
-    drawBoyAndBird(display);
-    return;
-  }
 
   if (animationSceneIndex == 7) {
     for (int layer = 0; layer < 3; layer++) {
@@ -1687,7 +1804,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 16) {
+  if (animationSceneIndex == 14) {
     const int centerX = SCREEN_WIDTH / 2;
     const int centerY = SCREEN_HEIGHT / 2;
     display.drawCircle(centerX, centerY, 8, SSD1306_WHITE);
@@ -1702,7 +1819,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 17) {
+  if (animationSceneIndex == 15) {
     for (int comet = 0; comet < 5; comet++) {
       int x = SCREEN_WIDTH - ((now / (20 + comet * 4) + comet * 31) % (SCREEN_WIDTH + 24));
       int y = 8 + (comet * 13 + (now / 180 + comet * 7) % 17) % 48;
@@ -1713,7 +1830,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 18) {
+  if (animationSceneIndex == 16) {
     for (int petal = 0; petal < 7; petal++) {
       int x = (petal * 23 + now / 35) % (SCREEN_WIDTH + 12) - 6;
       int y = (petal * 17 + now / 55) % (SCREEN_HEIGHT + 12) - 6;
@@ -1727,7 +1844,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 19) {
+  if (animationSceneIndex == 17) {
     const int baseline = 33;
     const int pulse = (now / 90) % 18;
     int previousX = 0;
@@ -1749,7 +1866,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 20) {
+  if (animationSceneIndex == 18) {
     int radius = (now / 55) % 34;
     display.drawCircle(64, 32, radius, SSD1306_WHITE);
     display.drawCircle(64, 32, (radius + 14) % 34, SSD1306_WHITE);
@@ -1757,7 +1874,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 21) {
+  if (animationSceneIndex == 19) {
     static const int starX[] = { 9, 28, 47, 68, 89, 113, 18, 55, 78, 101, 38, 121 };
     static const int starY[] = { 9, 38, 16, 51, 11, 34, 57, 28, 7, 54, 43, 16 };
     for (int star = 0; star < 12; star++) {
@@ -1775,7 +1892,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 22) {
+  if (animationSceneIndex == 20) {
     const int centerX = SCREEN_WIDTH / 2;
     const int centerY = SCREEN_HEIGHT / 2;
     display.drawCircle(centerX, centerY, 10, SSD1306_WHITE);
@@ -1788,7 +1905,7 @@ void drawSceneAnimation() {
     return;
   }
 
-  if (animationSceneIndex == 23) {
+  if (animationSceneIndex == 21) {
     for (int confetti = 0; confetti < 16; confetti++) {
       int x = (confetti * 29 + now / (18 + confetti % 5)) % SCREEN_WIDTH;
       int y = (confetti * 19 + now / (28 + confetti % 7)) % SCREEN_HEIGHT;
@@ -2071,7 +2188,7 @@ void drawMenu() {
   static const char* animationLabels[] = {
     "Snow", "Rain", "Clouds", "Bubbles", "Stars", "Hearts",
     "Fireflies", "Aurora", "Falling leaves", "Comets", "Fireworks",
-    "Spiral", "Tunnel", "DNA", "Girl & flower", "Boy & bird",
+    "Spiral", "Tunnel", "DNA",
     "Orbiting stars", "Comet shower", "Petal breeze", "Heartbeat",
     "Ripple rings", "Twinkle field", "Orbiting planet", "Confetti"
   };
@@ -2690,7 +2807,10 @@ void setup() {
   configuredWifiPassword = settings.getString("wifi_password", String(WIFI_PASSWORD));
   clockStyle = constrain(settings.getInt("clock", 0), 0, 5);
   weatherStyle = constrain(settings.getInt("weather", 0), 0, 5);
-  selectedAnimation = constrain(settings.getInt("animation", 0), 0, ANIMATION_SCENE_COUNT - 1);
+  int savedAnimation = settings.getInt("animation", 0);
+  if (savedAnimation >= 16) savedAnimation -= 2;
+  else if (savedAnimation >= 14) savedAnimation = 14;
+  selectedAnimation = constrain(savedAnimation, 0, ANIMATION_SCENE_COUNT - 1);
   animationSceneIndex = selectedAnimation;
   setFaceExpression(constrain(settings.getInt("expression", 1), 0, FACE_EXPRESSION_COUNT - 1));
   currentMode = MODE_AUTO;
@@ -2812,146 +2932,4 @@ void loop() {
 
   display.display();
   delay(20);
-}
-
-// Embedded bitmap animations used by the scene renderers.
-
-const uint8_t PROGMEM girlFlowerFrame0[1024] = {
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xfc, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3e, 0x0f, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x01, 0x7f, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x00, 0x79, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0xf8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0xfc, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcd, 0x00, 0x80, 0x7e, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x9f, 0x03, 0x00, 0x1e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x3c, 0x0c, 0x00, 0x00, 0xf3, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x38, 0x18, 0x00, 0x00, 0xf7, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x70, 0x20, 0x00, 0x00, 0x63, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0xe0, 0x00, 0x03, 0x00, 0x18, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xc0, 0x02, 0x03, 0x00, 0x1c, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 0x06, 0x07, 0x00, 0x1f, 0xe0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x0c, 0x07, 0x40, 0x5f, 0xe0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x1c, 0x07, 0x60, 0x4f, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x82, 0x04, 0x07, 0x20, 0x6f, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x31, 0x82, 0x3c, 0x0f, 0xa0, 0x27, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x00, 0x7c, 0x4c, 0x30, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x23, 0x05, 0xfe, 0x6f, 0x30, 0x30, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x23, 0x06, 0x0e, 0x27, 0x90, 0x33, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x04, 0x67, 0xb7, 0xc0, 0x33, 0xe0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x05, 0x8f, 0xfc, 0xe8, 0x13, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x65, 0xaf, 0xf8, 0x38, 0x13, 0xf8, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xc7, 0x8f, 0xfd, 0x98, 0x41, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0xc7, 0x8f, 0xfa, 0xd8, 0x21, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0xc7, 0x9f, 0xf2, 0xc8, 0x20, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x67, 0xff, 0xf0, 0xc8, 0x32, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x35, 0x7f, 0xf0, 0xd8, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x07, 0x08, 0x07, 0xff, 0xf9, 0xf3, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0x18, 0x07, 0xe0, 0xff, 0xf1, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x18, 0x70, 0x07, 0xe0, 0x1d, 0xe1, 0x83, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x10, 0xe0, 0x03, 0xe7, 0x9e, 0xfb, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x21, 0xc0, 0x60, 0xf7, 0xbf, 0xdf, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x23, 0x80, 0x77, 0x77, 0x7f, 0x9e, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x37, 0x00, 0x7f, 0x7c, 0xff, 0x08, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1e, 0x03, 0x8c, 0x3f, 0xfe, 0x00, 0x03, 0x20, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0x03, 0xb6, 0x0f, 0xf0, 0x00, 0x01, 0x20, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1c, 0x40, 0xc7, 0x00, 0x00, 0x00, 0x41, 0xa0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x3c, 0x40, 0xfb, 0x04, 0xc0, 0x00, 0x41, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x6c, 0x41, 0xd8, 0x07, 0xc0, 0x80, 0x40, 0xc0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x46, 0x41, 0x98, 0xdf, 0xf7, 0xe0, 0x20, 0xe0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc6, 0x40, 0x02, 0x9f, 0xf7, 0xf0, 0x20, 0x70, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc3, 0x60, 0x3a, 0x4f, 0xea, 0xf8, 0x10, 0x3c, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x63, 0x30, 0x61, 0x01, 0x96, 0xf8, 0x18, 0x1c, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x61, 0x90, 0x58, 0xce, 0x6d, 0xfc, 0x08, 0x0e, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x31, 0x80, 0xe9, 0xc3, 0x3d, 0xfc, 0x0c, 0x07, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0xf3, 0x6f, 0xbd, 0xfc, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0xf3, 0xe7, 0xb9, 0x9c, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0e, 0x01, 0xf7, 0xe7, 0x9b, 0x3c, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0x01, 0xfb, 0xc3, 0xdb, 0x7e, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1c, 0x01, 0xe3, 0xf7, 0xc0, 0xfe, 0x01, 0x8c, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x18, 0xc3, 0x8b, 0xe3, 0xc0, 0xfe, 0x01, 0x88, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x18, 0x83, 0x31, 0xc3, 0xec, 0x3f, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x19, 0x86, 0xe3, 0xd1, 0xf5, 0x87, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0d, 0xc5, 0xfb, 0x90, 0xed, 0xf3, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x04, 0xc1, 0xeb, 0x98, 0x6d, 0xfb, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0xe3, 0xec, 0x48, 0x99, 0xf9, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0xf7, 0xc8, 0xf3, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, 0x88, 0x7f, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
-void drawGirlWithFlower(Adafruit_SSD1306& target) {
-  target.drawBitmap(0, 0, girlFlowerFrame0, 128, 64, SSD1306_WHITE);
-}
-
-const uint8_t PROGMEM boyBirdFrame0[1024] = {
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xe7, 0xe0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x3f, 0xf8, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x1e, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0xfc, 0x00, 0x0e, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0f, 0xe0, 0x00, 0x07, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x03, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x0e, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x07, 0x80, 0x38, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x60, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x80, 0x00, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x01, 0xf0, 0x01, 0x80, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xe0, 0x03, 0x00, 0x01, 0x0c, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc0, 0x02, 0x00, 0x01, 0x07, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x01, 0x80, 0x00, 0x01, 0x01, 0x83, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x01, 0x84, 0x00, 0x03, 0x03, 0x81, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x03, 0x18, 0x00, 0x03, 0x03, 0xc0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x03, 0x30, 0x00, 0x07, 0x03, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x02, 0x70, 0x02, 0x07, 0x02, 0xc0, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x03, 0xe0, 0x04, 0x00, 0x07, 0xe2, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x03, 0xe0, 0x04, 0x26, 0x27, 0xe2, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x60, 0x0c, 0x1f, 0xef, 0x33, 0x80, 0x07, 0xe0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc0, 0x08, 0x7f, 0xfe, 0x43, 0x80, 0x0f, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0xf8, 0xfe, 0x26, 0x00, 0x0d, 0xf0, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc0, 0x01, 0xe4, 0xfe, 0x74, 0x00, 0x38, 0xf8, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xc0, 0x01, 0xcc, 0x7f, 0x34, 0x00, 0x1d, 0xf8, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xd8, 0x01, 0xd9, 0x7f, 0x36, 0x00, 0x0f, 0xfc, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xd8, 0x01, 0xdc, 0x7f, 0x32, 0x00, 0x0f, 0xfe, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x78, 0x61, 0xdc, 0x7f, 0xfa, 0x00, 0x1f, 0xdf, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x28, 0xf9, 0xfc, 0xff, 0xd8, 0x00, 0x1f, 0xbf, 0x38, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x0c, 0xcc, 0xff, 0xff, 0xf8, 0x00, 0x0f, 0xdd, 0xf0, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x05, 0xe7, 0xff, 0xc0, 0xf8, 0x00, 0x0f, 0xee, 0x7c, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0xe3, 0xeb, 0x80, 0xf0, 0x00, 0x07, 0xf1, 0xf8, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0x9c, 0xf0, 0x00, 0x03, 0xfe, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xdd, 0xe0, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x3e, 0x7f, 0xe3, 0xc0, 0x00, 0x3d, 0x20, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0xff, 0x00, 0x00, 0x7b, 0x6b, 0x80, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xfe, 0x00, 0x00, 0xf0, 0xdb, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x01, 0xff, 0x36, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x03, 0xff, 0xf4, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2f, 0x9b, 0xc0, 0x03, 0xff, 0xc8, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x1d, 0x3f, 0x93, 0xf8, 0x07, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x3d, 0x3f, 0x37, 0xf9, 0x0f, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x7d, 0x9c, 0x67, 0xf3, 0x9f, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0xc1, 0xcf, 0xe7, 0x3f, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0xfe, 0x7f, 0x9f, 0xee, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0xef, 0x1e, 0x3d, 0xcc, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x03, 0xef, 0xc0, 0xfd, 0xdd, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x03, 0xef, 0xff, 0xfc, 0xd9, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x03, 0xe7, 0xff, 0xfc, 0xbb, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x09, 0xf7, 0xff, 0xfe, 0xbb, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1c, 0x77, 0xff, 0xfe, 0x3b, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x1f, 0x07, 0xff, 0xfe, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x07, 0xc7, 0xff, 0xff, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0xe7, 0xff, 0xff, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x6f, 0xff, 0xff, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x03, 0x0f, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
-void drawBoyAndBird(Adafruit_SSD1306& target) {
-  target.drawBitmap(0, 0, boyBirdFrame0, 128, 64, SSD1306_WHITE);
 }
